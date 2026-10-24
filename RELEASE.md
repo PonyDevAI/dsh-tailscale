@@ -42,6 +42,16 @@ node scripts/release-notes.mjs /tmp/release-notes.md
 cat /tmp/release-notes.md
 ```
 
+## 一·六、新包首发的 staged publishing（npm 11.15+）
+
+npm 对**新包首次发布**会进入 **staged publishing** 待批准区（registry 上先出现 `0.0.0-stage` 占位符）：
+
+1. 维护者执行 `npm publish`（或 `npm stage publish`），按提示在浏览器完成 2FA；
+2. 打开 <https://www.npmjs.com/staged-packages> 审核并点 **Approve**（会再验证一次 2FA，可用邮箱验证码 / 安全密钥 / 恢复码）；
+3. 批准后版本才真正出现在 registry，`dist-tags.latest` 才指向它。
+
+首次发布完成后立刻配置 Trusted Publisher（见下一节），后续发版直接走 tag → Actions，不再需要本地 2FA。
+
 ## 二、认证方式（OIDC，永不过期）
 
 使用 **npm Trusted Publishing（OIDC）**：
