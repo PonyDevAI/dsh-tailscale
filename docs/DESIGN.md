@@ -519,8 +519,8 @@ plugins/dsh-tailscale/
 | 阶段 | 内容 | 验收标准 | 预估 |
 |---|---|---|---|
 | **P0 探针** | 写一个一次性 `spike.mjs`：真实跑 `status --json` / `serve status --json`，确认 serve 增删命令与 JSON 字段；在 dsh 里验证 `ctx.provide` + 另一插件 `ctx.get`、`trustedHosts.push` 后 ts.net 的 `/api` 不再 403；验证 `authenticatedUrl` 在手机上的完整登录 | 手机经 ts.net 能进 UI、能发一条消息；`serve` 路由可精确增删；记录 CLI 版本差异 | 0.5 天 |
-| **P1 v0.1 入站 MVP** | Host：cli/serve/trust/service + `/tailscale/*` + 状态文件/认领；Client：设置页「远程访问」（状态/开关/入口/登录链接/诊断）；假 CLI 冒烟；装进 profile；迁掉 launchd | 本机与手机全流程通过；重启恢复；崩溃后认领；退出撤回；无 token 泄漏；旧脚本可下线 | 1.5 天 |
-| **P2 v0.2 设备感知** | `devices()` / `device()` / `probe()` / `subscribe()`；设备列表 UI；health 深检；平台差异（Linux operator、macOS 路径） | `devices()` 与 `tailscale status` 一致（含离线/直连/DERP 字段）；设置页设备列表正确；无 tailscale 时插件自身不起定时器、不报错刷屏 | 1 天 |
+| **P1 v0.1 入站 MVP** ✅ | Host：cli/serve/trust/service + `/tailscale/*` + 状态文件/认领；Client：设置页「远程访问」（状态/开关/入口/登录链接/诊断）；假 CLI 冒烟；装进 profile；迁掉 launchd | ✅ 2026-10-24 完成并现网验证（自动发布、ts.net 登录 303、围栏 401/403、RPC 撤回/重建）；剩余：重启恢复与 SIGTERM 撤回待手动验证；launchd 下线待重启验证后执行 | 1.5 天 |
+| **P2 v0.2 设备感知** 🟡 | `devices()` / `device()` / `probe()` / `subscribe()`；设备列表 UI；health 深检；平台差异（Linux operator、Windows） | v0.1 已带 devices/snapshot/health/设备列表（现网 30 台/17 在线）；剩余：deep 健康检查 UI 接线、Linux/Windows 平台差异实测 | 0.5–1 天 |
 | **P3 v0.3 手机联动** | dsh-phone 消费 `ctx.get('tailscale')`：`/phone/tailnet` + 连接面板「Tailnet 设备」分组 + 一键 connect + allow/autoConnect 配置 | 打开面板能看到云手机并点一下连上，画面/点按正常；卸载 dsh-tailscale 后 dsh-phone 行为完全不变 | 1–1.5 天 |
 | **P4 v0.4 加固与发布** | 崩溃认领/多实例 path 的自动化测试、CI、README/CHANGELOG、npm 发布；可选：手机端精简 client 插件图、Windows 支持 | 冒烟+单测进 CI；发布 0.4.0；升级矩阵（0.2.1-rc.2 实测） | 1 天 |
 
