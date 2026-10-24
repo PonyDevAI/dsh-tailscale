@@ -13,7 +13,7 @@
 //                             | conflict | cli-failed | garbage
 //                        过滤命中 argv[0]、`argv[0] argv[1]` 或整条命令行的子串；
 //                        不写过滤 = 所有命令都失败。garbage 用 exit 0 + 非 JSON 输出模拟坏输出。
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const argv = process.argv.slice(2)
@@ -28,6 +28,8 @@ const FAIL_MODES = {
   'cli-failed': { code: 1, stderr: 'unexpected internal error' },
   // 模拟 CLI 超时：stderr 文案命中 classifyCliError 的 /timed? ?out/i。
   timeout: { code: 1, stderr: 'dial tcp 127.0.0.1:443: i/o timeout (Client.Timeout exceeded)' },
+  // `up` 失败：stderr 会回显读到的 auth key（只为验证 service 侧脱敏）；calls.log 里仍只有 argv。
+  'up-failed': { code: 1, stderr: '' },
   // 非 JSON 输出：验证 parseJson 的 tailscale/bad-output 归类（exit 0）。
   garbage: { code: 0, stdout: 'this is not JSON at all' },
 }
@@ -255,6 +257,96 @@ function runServeOff(home, parsed) {
   return 0
 }
 
+function writeStatus(home, status) {
+  writeFileSync(join(home, 'status.json'), `${JSON.stringify(status, null, 2)}\n`)
+}
+
+function authKeyFileFromArgs(args) {
+  for (const token of args) {
+    if (token.startsWith('--auth-key=file:')) return token.slice('--auth-key=file:'.length)
+  }
+  return ''
+}
+
+function hostnameFromArgs(args) {
+  for (const token of args) {
+    if (token.startsWith('--hostname=')) return token.slice('--hostname='.length)
+  }
+  return ''
+}
+
+/** `tailscale up`：读 auth key 文件登录（只记录"读到过 + 文件权限位"，绝不记录内容）。 */
+function runUp(home) {
+  const status = readStatus(home)
+  if (!status) {
+    toStderr(`fake-tailscale: unable to read ${join(home, 'status.json')}`)
+    return 1
+  }
+  for (const token of argv.slice(1)) {
+    if (token.startsWith('--hostname=')) continue
+    if (token.startsWith('--auth-key=file:') || token.startsWith('--auth-key=')) continue
+    toStderr(`fake-tailscale: unsupported up flag: ${token}`)
+    return 1
+  }
+  const keyFile = authKeyFileFromArgs(argv)
+  if (keyFile) {
+    if (!existsSync(keyFile)) {
+      toStderr(`fake-tailscale: auth key file not found: ${keyFile}`)
+      return 1
+    }
+    let keyText = ''
+    try {
+      keyText = readFileSync(keyFile, 'utf8')
+    } catch {
+      keyText = ''
+    }
+    if (!keyText.trim()) {
+      toStderr('fake-tailscale: auth key file is empty')
+      return 1
+    }
+    const keyMode = statSync(keyFile).mode & 0o777
+    // 密钥内容不落盘、不进日志；只把 marker 与文件权限写进 status.json 供测试断言。
+    status.FakeUp = { authKeyProvided: true, authKeyMode: keyMode }
+  }
+  const hostname = hostnameFromArgs(argv)
+  status.BackendState = 'Running'
+  status.HaveNodeKey = true
+  status.TUN = true
+  status.Self = isPlainObject(status.Self) ? status.Self : {}
+  status.Self.Online = true
+  if (hostname) status.Self.HostName = hostname
+  writeStatus(home, status)
+  toStdout(hostname ? `Logged in; hostname set to ${hostname}` : 'Logged in')
+  return 0
+}
+
+/** `tailscale set --hostname=<name>`：更新 status.json 的 Self.HostName。 */
+function runSet(home) {
+  const status = readStatus(home)
+  if (!status) {
+    toStderr(`fake-tailscale: unable to read ${join(home, 'status.json')}`)
+    return 1
+  }
+  let hostname = ''
+  for (const token of argv.slice(1)) {
+    if (token.startsWith('--hostname=')) {
+      hostname = token.slice('--hostname='.length)
+      continue
+    }
+    toStderr(`fake-tailscale: unsupported set flag: ${token}`)
+    return 1
+  }
+  if (!hostname) {
+    toStderr('fake-tailscale: set 需要 --hostname=<name>')
+    return 1
+  }
+  status.Self = isPlainObject(status.Self) ? status.Self : {}
+  status.Self.HostName = hostname
+  writeStatus(home, status)
+  toStdout(`hostname set to ${hostname}`)
+  return 0
+}
+
 function runServe(home) {
   const sub = argv[1] || ''
   if (sub === 'status') return runServeStatus(home)
@@ -286,6 +378,21 @@ function main() {
     toStderr(`fake-tailscale: unknown FAKE_TAILSCALE_FAIL mode: ${process.env.FAKE_TAILSCALE_FAIL}`)
     return 2
   }
+  if (failure === 'up-failed') {
+    // 故意把 key 回显到 stderr（execFile 只捕获、不会打印到终端），用来验证 service 侧脱敏。
+    const keyFile = authKeyFileFromArgs(argv)
+    let key = ''
+    if (keyFile && existsSync(keyFile)) {
+      try {
+        key = readFileSync(keyFile, 'utf8').trim()
+      } catch {
+        key = ''
+      }
+    }
+    // 除了真实 key 再拼一个「看起来像 key」的 decoy，用来验证 service 侧的正则兜底脱敏。
+    toStderr(`up failed: invalid authkey ${key || '(missing key file)'} (seen also: tskey-decoyAAAA1111BBBB)`)
+    return 1
+  }
   if (failure) {
     const spec = FAIL_MODES[failure]
     if (spec.stdout) toStdout(spec.stdout)
@@ -300,7 +407,9 @@ function main() {
   }
   if (command === 'status') return runStatus(home)
   if (command === 'serve') return runServe(home)
-  // 刻意不实现 up / down / login / logout / funnel / set 等：插件不该调用它们。
+  if (command === 'up') return runUp(home)
+  if (command === 'set') return runSet(home)
+  // 刻意不实现 down / login / logout / funnel 等：插件不该调用它们。
   toStderr(`fake-tailscale: unsupported command: ${argv.join(' ') || '(empty)'}`)
   return 1
 }

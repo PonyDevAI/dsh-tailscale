@@ -31,6 +31,22 @@ dsh plugin --profile web add link:/Users/pony/deepseek/plugins/dsh-tailscale
 
 退出时：`tailscale serve --https=<httpsPort> [--set-path=<path>] off`，只撤自己那条；**绝不** `serve reset`、**绝不** `tailscale down`。
 
+## 安装 / 登录 / 配置向导（v0.2）
+
+插件统一管理**本机这一套 Tailscale**，不创建独立节点：
+
+| 状态 | 设置页行为 |
+|---|---|
+| 未安装 | 「安装 Tailscale」：macOS 优先 `brew install --cask tailscale-app`，没有 brew 则下载官方 pkg 并通过**系统授权弹窗**安装（插件不接触密码）；安装进行中显示日志，2s 轮询状态 |
+| 已安装未运行 | 「启动 Tailscale」 |
+| 未登录 | 两种登录：**本地二维码**（AuthURL，60s 自动隐藏，不上传）或 **auth key**（环境变量 `TAILSCALE_AUTH_KEY` 或临时粘贴，只在 Host 内存/0600 临时文件中，不落盘不进日志） |
+| 运行中 | 「开启入口」、复制手机登录链接 |
+| 已发布 | 手机入口、关闭入口 |
+
+节点 hostname 可在设置页修改（默认不动）；修改会二次确认并提示影响整机（SSH、serve 域名、其他服务）。
+
+安装/登录/主机名对应 RPC：`POST /tailscale/{setup,install,start,auth-url,login,hostname}`，全部经登录围栏。
+
 ## 会话头部图标
 
 会话右上角工具区有一个 Tailscale 图标（和手机图标同排）：
@@ -65,6 +81,9 @@ Host 侧每 60 秒做一次轻量自愈：入口路由不在（被 HMR 重载竞
         deviceTtlMs: 10000
         probeTimeoutMs: 800
         allow: []              # 设备过滤正则
+        allowAutoInstall: true # 允许插件代跑安装命令（仍会二次确认/系统授权）
+        installMethod: auto    # auto | brew | pkg | manual
+        authKeyEnv: TAILSCALE_AUTH_KEY
 ```
 
 ## 给其他插件用：`ctx.tailscale`

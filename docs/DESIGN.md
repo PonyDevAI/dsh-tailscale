@@ -640,3 +640,90 @@ plugins/dsh-tailscale/
 3. **命名**：`@ponydev/dsh-tailscale`（推荐，和 model-usage 一致）还是裸名 `dsh-tailscale`？两者 npm 都可用。
 4. **dsh-phone 改动范围**：P3 只做「发现 + 一键连接」，还是同时把 hdc transport 也做了？建议先只做 adb，hdc 看设备情况。
 5. **旧手工件**：P1 验收后是否立即下线 launchd 脚本、并去掉 `--trusted-host`？建议下线脚本，参数先留着（无害）。
+
+---
+
+## 18. 统一系统 Tailscale：复用 + 安装/登录/配置向导（v0.2 规划）
+
+> **2026-10-24 决策（替代原「独立节点」方案）**：只维护**本机这一套 Tailscale**。
+> 默认复用；没装就由插件**自动安装并引导配置**；不创建 DSH 专属节点，不存在第二套 state/登录/hostname。
+> 所有配置集中在同一个设置页，一套状态机。
+
+### 18.1 状态机（设置页 / 顶部图标的唯一口径）
+
+```
+未安装 ──安装──▶ 已安装未运行/未登录 ──登录──▶ 运行中（未发布入口）──开启──▶ 已发布
+   ▲                    │   ▲                                              │
+   └────卸载检测─────────┘   └────────── 登录过期/退出登录 ◀────────────────┘
+```
+
+| 状态 | 判定 | 主操作 |
+|---|---|---|
+| 未安装 | 找不到 CLI/daemon（PATH、`/Applications/Tailscale.app`、brew 路径都无） | **一键安装**（见 18.2） |
+| 已安装未运行 | `BackendState` ∈ Stopped/Starting/NoState | 启动 Tailscale（macOS `open -a Tailscale`） |
+| 未登录 | `BackendState = NeedsLogin` 且 `AuthURL` 非空 | **扫码登录**（AuthURL 本地二维码）/ 浏览器打开 / auth key |
+| 运行中 | `Running` | 开启入口（serve） |
+| 已发布 | serve 路由 `exact` | 复制/二维码手机入口、关闭入口 |
+
+### 18.2 自动安装（平台矩阵）
+
+安装是**系统级操作**，插件不静默提权，只做"代跑 + 系统授权弹窗"：
+
+| 平台 | 首选 | 回退 | 权限 |
+|---|---|---|---|
+| macOS（本机有 Homebrew） | `brew install --cask tailscale-app`（后台跑，输出进日志） | 下载官方 `.pkg` → `osascript … installer … with administrator privileges`（系统密码框，插件不接触密码） | 可能弹管理员授权 |
+| macOS（无 Homebrew） | 官方 pkg + 系统授权弹窗 | 打开 <https://tailscale.com/download/mac> 引导手动安装 | 管理员授权 |
+| Linux | 显示 `curl -fsSL https://tailscale.com/install.sh \| sh`；root/免密 sudo 时可代跑 | 复制命令手动执行 | root/sudo |
+| Windows | `winget install Tailscale.Tailscale` | 打开下载页 | 可能 UAC |
+
+- 安装前必须**用户点击并二次确认**；安装中显示进度/日志尾部；结束自动重新检测。
+- **App Store 版**与 **standalone 版** CLI 路径不同但命令一致；本机当前是 App Store 版（沙箱 entitlements，`/Applications/Tailscale.app`），插件兼容两者。
+- macOS 装完 standalone 后需要用户首次打开 App、批准 VPN 配置（系统扩展），插件只能引导不能代做。
+- 卸载不是本插件职责；只做检测与提示。
+
+### 18.3 登录（两种都做）
+
+| 方式 | 交互 | 实现 |
+|---|---|---|
+| **扫码/链接登录**（推荐） | 设置页把 `AuthURL` 渲染成**本地二维码**（纯前端生成，不外发）+「在浏览器打开」 | `tailscale up`（未登录时 CLI 返回 AuthURL）或直接读 `status --json.AuthURL`；二维码 60s 自动隐藏 |
+| **auth key 登录**（无头） | 环境变量优先（`TAILSCALE_AUTH_KEY`，可配 env 名）；设置页粘贴只走 Host 内存，不落盘/不进日志 | `tailscale up --authkey=… [--hostname=…]`，必须用户显式点击；仅在未登录/需要重新登录时可用 |
+
+安全红线：**绝不自动 `up`/`login`**；auth key 不回显、不写状态文件、不写 profile；二维码内容不出本机。
+
+### 18.4 统一配置项
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `mode` | `auto`（唯一模式） | 不再有 reuse/managed 之分，永远操作本机 Tailscale |
+| `autoPublish` / `httpsPort` / `publishPath` / `unpublishOnExit` | 同 v0.1 | 入口行为 |
+| `hostname` | 空（保持节点现名） | 设置后执行 `tailscale set --hostname <name>`；**改的是整机节点名**，需二次确认并提示影响其他服务 |
+| `authKeyEnv` | `TAILSCALE_AUTH_KEY` | 读取环境变量的键名 |
+| `allowAutoInstall` | `false` | 必须显式开启才允许插件代跑安装命令 |
+| `installMethod` | `auto` | `auto` / `brew` / `pkg` / `manual`，按平台可用性降级 |
+| `deviceTtlMs` / `probeTimeoutMs` / `allow` | 同 v0.1 | 设备感知 |
+
+### 18.5 与 v0.1 的差异
+
+- **不新增** `ManagedBackend`、userspace tailscaled、独立 state/socket/节点；原 §18 方案作废（已实现的服务契约、serve 生命周期、自愈逻辑全部保留）。
+- 新增：`SetupManager`（检测/安装/启动）、`AuthURL`/`loginWithAuthKey`、`setHostname`、设置页安装/登录状态机、二维码组件。
+- `ctx.tailscale` 契约保持不变；`summary()/status()` 增加 `setup: { installed, cliPath, appPath, method }` 与 `authUrl`（仅 NeedsLogin 时）。
+
+### 18.6 分阶段
+
+| 阶段 | 内容 | 验收 | 预估 |
+|---|---|---|---|
+| **P2a 安装向导** ✅ | 检测矩阵 + `brew`/`pkg` 代跑（含系统授权弹窗）+ 安装状态机 + 设置页引导 | ✅ 2026-10-24 已实现（detect/install/start + 安装卡轮询）；真机"未安装"场景待找空机器验证 | 1–1.5 天 |
+| **P2b 登录与身份** ✅ | AuthURL 本地二维码、auth key 登录、hostname 修改（二次确认） | ✅ 已实现（vendored MIT qrcode-generator；auth key 走 0600 临时文件 + `--auth-key=file:`；hostname `set --hostname` + 二次确认）；现网已装机器上路径已测 | 1 天 |
+| **P2c 收口** 🟡 | 状态机与顶部图标统一、错误文案、自动化测试（假 CLI 安装/登录场景）、文档 | ✅ 86 条离线测试覆盖 setup/login/hostname 守卫与降级；剩余：真机「未安装」环境跑一次安装全流程、未登录态视觉验证 | 0.5–1 天 |
+| **P3 手机联动** | dsh-phone 的 adb/hdc 通过 `ctx.tailscale` 发现设备 | 原计划 | 1–1.5 天 |
+
+### 18.7 风险
+
+| 风险 | 缓解 |
+|---|---|
+| 自动安装需要管理员权限，无法全静默 | 只用系统授权弹窗（osascript；插件不接触密码）；失败就给可复制命令 |
+| 用户机器没有 Homebrew / 网络受限 | 降级到官方 pkg 下载页 + 手动引导；所有失败路径给出确切原因 |
+| App Store 版无法被 brew 管理 | 检测来源；App Store 版只做使用与登录，不尝试覆盖安装 |
+| macOS 首次安装需要用户批准 VPN 配置 | 明确提示「打开 Tailscale 并允许 VPN 配置」，未完成时状态机停在"已安装未运行" |
+| auth key 泄漏 | 仅环境变量/内存；不落盘；错误信息脱敏 |
+| hostname 改动影响整机 | 默认不改；修改前二次确认并列出影响（SSH、serve 域名、其他服务） |

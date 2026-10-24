@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.2.0 (unreleased)
+
+- 统一系统 Tailscale 向导：检测 → 自动安装（brew 优先，官方 pkg + 系统授权回退）→ 启动 → 登录（AuthURL 本地二维码 / auth key）→ 配置 hostname。
+- 新增 `lib/setup.js`（安装/启动/登录/主机名管理）；auth key 走 0600 临时文件 + `--auth-key=file:`，不入日志/不落盘。
+- 新增 RPC：`setup` / `install` / `start` / `auth-url` / `login` / `hostname`；`summary()`/`snapshot()` 带 setup 信息。
+- Client：安装卡（含进度日志轮询）、Tailscale 登录卡（本地二维码 + auth key）、节点 hostname 卡（二次确认），二维码用 vendored MIT qrcode-generator 本地生成。
+- 配置：`allowAutoInstall`（默认 true）、`installMethod`、`authKeyEnv`。
+
 ## 0.1.1 (unreleased)
 
 - 会话头部新增 Tailscale 图标：绿/红/灰状态点、30s 轮询（页面隐藏暂停）、悬停显示在线状态/域名/入口/设备数；点击打开「设置 → 远程访问」。

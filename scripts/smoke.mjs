@@ -19,6 +19,7 @@ import { authorityFor, classifyServe, funnelEnabled, listHandlers, normalizePath
 import { assertAuthority, ensureTrusted, isTrusted } from '../lib/trust.js'
 import { createStateStore } from '../lib/state.js'
 import { createTailscaleService } from '../lib/service.js'
+import { detectInstall, SetupManager } from '../lib/setup.js'
 import { assertProbeTarget, probeTcp } from '../lib/probe.js'
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
@@ -88,6 +89,24 @@ function readCalls(home) {
 /** `serve --bg ...`（真正的创建）调用次数。 */
 function serveCreateCalls(calls) {
   return calls.filter((call) => call.argv[0] === 'serve' && call.argv.includes('--bg'))
+}
+
+/** 就地改写临时 fake home 的 status.json（模拟 CLI 状态变化 / 注入 AuthURL）。 */
+function patchStatus(home, patch) {
+  const file = join(home, 'status.json')
+  const data = JSON.parse(readFileSync(file, 'utf8'))
+  patch(data)
+  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`)
+  return data
+}
+
+/** 从 calls.log 里取出 `up --auth-key=file:<path>` 的临时文件路径。 */
+function authKeyFileFromCalls(home) {
+  for (const call of readCalls(home)) {
+    const token = call.argv.find((arg) => arg.startsWith('--auth-key=file:'))
+    if (token) return token.slice('--auth-key=file:'.length)
+  }
+  return ''
 }
 
 /** 假 ctx：service 只通过 ctx.get(name) 取 connection / webServer。 */
@@ -674,6 +693,11 @@ test('service · 发布 → 认领 → 健康 → 快照 → 撤回', async (t) 
       assert.equal(snapshot.devices.length, 3, 'devices 数量')
       assert.equal(snapshot.health.ok, true, 'health.ok')
       assert.equal(snapshot.health.checks.length, 6, 'health.checks 数量')
+      // setup 集成：snapshot 也要带安装/登录向导所需的字段
+      assert.equal(snapshot.setup?.installed, true, 'snapshot.setup.installed')
+      assert.equal(typeof snapshot.setup.allowAutoInstall, 'boolean', 'snapshot.setup.allowAutoInstall')
+      assert.equal(snapshot.setup.installMethod, 'auto', 'snapshot.setup.installMethod')
+      assert.equal(snapshot.setup.state?.phase, 'idle', 'snapshot.setup.state.phase')
     })
 
     await t.test('unpublish() 撤单条、清状态文件、复原 trustedHosts，且不用 reset/down', async () => {
@@ -1192,6 +1216,12 @@ test('service · summary() 轻量状态（不查 serve）', async (t) => {
       assert.equal(summary.publication.path, '/', 'publication.path')
       assert.equal(typeof summary.at, 'number', 'at 时间戳')
       assert.equal(summary.error, undefined, '正常时没有 error')
+      // setup 集成：summary 带安装/登录向导状态
+      assert.equal(summary.setup?.installed, true, 'summary.setup.installed')
+      assert.equal(typeof summary.setup.method, 'string', 'summary.setup.method')
+      assert.equal(summary.setup.allowAutoInstall, true, 'summary.setup.allowAutoInstall')
+      assert.equal(summary.setup.installMethod, 'auto', 'summary.setup.installMethod')
+      assert.equal(summary.setup.state?.phase, 'idle', 'summary.setup.state.phase')
       const summaryCalls = readCalls(home).slice(callsBefore).map((call) => call.argv.join(' '))
       assert.deepEqual(summaryCalls, ['status --json'], 'summary 只读一次 cached status，不查 serve')
     })
@@ -1277,6 +1307,381 @@ test('service · unpublish() 识别实例已被接管（superseded）', async ()
   })
 })
 
+// ================================================================ 7e. setup.js（安装/启动/登录/主机名）
+const VALID_KEY = 'tskey-auth-smoke0123456789ABCDEF'
+
+test('setup.js · detectInstall 路径探测', () => {
+  const explicit = detectInstall({ cliPath: FAKE_CLI })
+  assert.equal(explicit.installed, true, '显式存在的 cliPath → installed:true')
+  assert.equal(explicit.cliPath, FAKE_CLI, 'cliPath 原样返回')
+  assert.equal(explicit.source, 'path', 'source=path')
+  assert.equal(explicit.viaAppBundle, false, '假 CLI 不在 App Bundle 里')
+  assert.equal(typeof explicit.platform, 'string', 'platform 字符串')
+  assert.ok(
+    ['brew', 'pkg', 'script', 'winget', 'manual'].includes(explicit.method),
+    `method 取值合理：${explicit.method}`,
+  )
+  assert.equal(typeof explicit.canAutoInstall, 'boolean', 'canAutoInstall 布尔')
+  assert.equal(typeof explicit.brewPath, 'string', 'brewPath 字符串')
+
+  const missing = detectInstall({ cliPath: '/nonexistent/dsh-tailscale-cli-not-here' })
+  assert.equal(typeof missing.installed, 'boolean', '不存在的路径回落到默认候选，结果是布尔')
+  assert.ok(['app', 'path', 'none'].includes(missing.source), `source 取值合理：${missing.source}`)
+  assert.equal(typeof missing.method, 'string', 'method 字符串')
+  if (missing.installed) assert.ok(missing.cliPath.length > 0, 'installed 时 cliPath 非空')
+  else assert.equal(missing.cliPath, '', '未安装时 cliPath 为空')
+})
+
+test('setup.js · SetupManager.info() 契约', () => {
+  const manager = new SetupManager({ cliPath: FAKE_CLI, config: { allowAutoInstall: false, installMethod: 'pkg' } })
+  const info = manager.info()
+  assert.equal(info.installed, true, 'info.installed')
+  assert.equal(info.allowAutoInstall, false, 'info.allowAutoInstall 来自 config')
+  assert.equal(info.installMethod, 'pkg', 'info.installMethod 来自 config')
+  assert.equal(info.state.running, false, '初始 state.running=false')
+  assert.equal(info.state.phase, 'idle', '初始 state.phase=idle')
+  assert.equal(info.state.error, null, '初始无 error')
+  assert.ok(Array.isArray(info.state.log), 'state.log 是数组')
+  assert.ok(['app', 'path', 'none'].includes(info.source), 'info.source 合理')
+
+  // installMethod 反映配置；缺省/空串回落到 auto
+  for (const [configured, expected] of [
+    [{}, 'auto'],
+    [{ installMethod: '' }, 'auto'],
+    [{ installMethod: 'auto' }, 'auto'],
+    [{ installMethod: 'manual' }, 'manual'],
+    [{ installMethod: 'pkg' }, 'pkg'],
+    [{ installMethod: 'brew' }, 'brew'],
+  ]) {
+    const configuredManager = new SetupManager({ cliPath: FAKE_CLI, config: configured })
+    assert.equal(configuredManager.info().installMethod, expected, `installMethod ${JSON.stringify(configured)} → ${expected}`)
+  }
+})
+
+test('setup.js · service.setupInfo() 暴露 installMethod', async () => {
+  await withFakeHome({}, async ({ home }) => {
+    for (const [config, expected] of [
+      [{}, 'auto'],
+      [{ installMethod: 'manual', allowAutoInstall: false }, 'manual'],
+      [{ installMethod: 'pkg' }, 'pkg'],
+    ]) {
+      const { service } = makeService({ home, config })
+      const info = service.setupInfo()
+      assert.equal(info.installMethod, expected, `setupInfo.installMethod ${JSON.stringify(config)} → ${expected}`)
+      assert.equal(info.state.phase, 'idle', '未执行安装时 phase 仍 idle')
+    }
+  })
+})
+
+test('setup.js · installMethod=manual / brew 无 Homebrew（离线分支）', async (t) => {
+  // 不跑真实安装：把 detect 桩成"未安装"，只验证方法选择与守卫。
+  const notInstalledDetection = (platform = 'darwin') => ({
+    platform,
+    installed: false,
+    cliPath: '',
+    appPath: '',
+    viaAppBundle: false,
+    brewPath: '',
+    method: 'brew',
+    canAutoInstall: true,
+    source: 'none',
+  })
+
+  await t.test('manual → install-manual 且不执行任何命令', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const manager = new SetupManager({ cliPath: FAKE_CLI, config: { allowAutoInstall: true, installMethod: 'manual' } })
+      manager.detect = notInstalledDetection
+      await assert.rejects(
+        () => manager.install(),
+        (error) => {
+          assert.equal(error.code, 'tailscale/install-manual', 'manual → install-manual')
+          return true
+        },
+        'manual 模式必须拒绝代跑安装',
+      )
+      assert.equal(existsSync(join(home, 'calls.log')), false, '没有执行任何 CLI / 安装命令')
+      assert.equal(manager.info().state.phase, 'idle', 'state.phase 保持 idle')
+      assert.equal(manager.info().state.running, false, 'state.running=false')
+      assert.equal(manager.info().state.error, null, '未开始任务也没有 error')
+    })
+  })
+
+  await t.test('brew 但找不到 Homebrew → install-failed 且不执行 brew', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const manager = new SetupManager({ cliPath: FAKE_CLI, config: { allowAutoInstall: true, installMethod: 'brew' } })
+      manager.detect = notInstalledDetection
+      await assert.rejects(
+        () => manager.install(),
+        (error) => {
+          assert.equal(error.code, 'tailscale/install-failed', 'brew 缺 Homebrew → install-failed')
+          assert.match(error.message, /Homebrew/, `错误信息说明缺少 Homebrew：${error.message}`)
+          return true
+        },
+        'brew 不可用时必须拒绝',
+      )
+      assert.equal(existsSync(join(home, 'calls.log')), false, '没有执行 brew / CLI')
+      assert.equal(manager.info().state.phase, 'idle', '守卫在 #begin 之前，state 保持 idle')
+    })
+  })
+})
+
+test('setup.js · start() 的 macOS 分支', async (t) => {
+  await t.test('CLI-only（无 App）→ 返回 hint 且不执行 open', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const manager = new SetupManager({ cliPath: FAKE_CLI, config: {} })
+      manager.detect = () => ({
+        platform: 'darwin',
+        installed: true,
+        cliPath: FAKE_CLI,
+        appPath: '',
+        viaAppBundle: false,
+        brewPath: '',
+        method: 'brew',
+        canAutoInstall: true,
+        source: 'path',
+      })
+      const result = await manager.start()
+      assert.equal(result.ok, false, '没有 App 时不应假装启动成功')
+      assert.match(result.hint, /brew services start tailscale|tailscaled/, `hint 给出 CLI-only 启动命令：${result.hint}`)
+      assert.equal(existsSync(join(home, 'calls.log')), false, '不调用假 CLI')
+    })
+  })
+
+  await t.test('有 App 时会执行 open -a Tailscale（跳过：避免真实启动应用）', (t) => {
+    // 该分支会真的执行 `/usr/bin/open -a Tailscale`，冒烟测试不制造副作用，只显式标注未覆盖。
+    t.skip('启动 Tailscale.app 有真实副作用（打开 GUI / 触发 VPN 授权），冒烟测试不执行')
+  })
+})
+
+test('setup.js · install() 守卫（无副作用）', async (t) => {
+  await t.test('allowAutoInstall:false → install-disabled 且不执行安装命令', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home, config: { allowAutoInstall: false } })
+      assert.equal(service.setupInfo().allowAutoInstall, false, 'setupInfo 反映配置')
+      await assert.rejects(
+        () => service.install(),
+        (error) => {
+          assert.equal(error.code, 'tailscale/install-disabled', 'allowAutoInstall=false → install-disabled')
+          return true
+        },
+        '禁用自动安装时必须拒绝',
+      )
+      assert.equal(existsSync(join(home, 'calls.log')), false, '没有调用任何 CLI / 安装命令')
+      assert.equal(service.setupInfo().state.phase, 'idle', 'state.phase 保持 idle')
+    })
+  })
+
+  await t.test('已安装 → already-installed 且不重复安装', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home })
+      assert.equal(service.setupInfo().installed, true, '假 CLI 路径存在 → 视为已安装')
+      await assert.rejects(
+        () => service.install(),
+        (error) => {
+          assert.equal(error.code, 'tailscale/already-installed', '已安装 → already-installed')
+          return true
+        },
+        '重复安装必须拒绝',
+      )
+      assert.equal(existsSync(join(home, 'calls.log')), false, '没有调用任何 CLI / 安装命令')
+      assert.equal(service.setupInfo().state.phase, 'idle', 'state.phase 保持 idle')
+    })
+  })
+})
+
+test('setup.js · loginWithAuthKey 安全登录', async (t) => {
+  await t.test('坏 key → bad-auth-key 且无 CLI 调用', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home })
+      const previous = process.env.TAILSCALE_AUTH_KEY
+      delete process.env.TAILSCALE_AUTH_KEY
+      try {
+        for (const bad of ['', 'not-a-key', 'tskey-short', 'tskey-has space', 'x'.repeat(400)]) {
+          await assert.rejects(
+            () => service.loginWithAuthKey({ key: bad }),
+            (error) => {
+              assert.equal(error.code, 'tailscale/bad-auth-key', `坏 key 应拒绝：${JSON.stringify(bad)}`)
+              return true
+            },
+            `坏 key 被拒绝：${JSON.stringify(bad)}`,
+          )
+        }
+      } finally {
+        restoreEnv('TAILSCALE_AUTH_KEY', previous)
+      }
+      assert.equal(existsSync(join(home, 'calls.log')), false, '坏 key 不触发 CLI')
+    })
+  })
+
+  await t.test('好 key → up --auth-key=file: 登录，key 不进 argv/日志', async () => {
+    await withFakeHome({ status: 'status-needs-login.json' }, async ({ home }) => {
+      const { service } = makeService({ home })
+      const result = await service.loginWithAuthKey({ key: VALID_KEY, hostname: 'dsh-smoke-host' })
+      assert.deepEqual(result, { ok: true }, '登录返回 {ok:true}')
+
+      const upCall = readCalls(home).find((call) => call.argv[0] === 'up')
+      assert.ok(upCall, '调用了 tailscale up')
+      assert.ok(upCall.argv.some((arg) => arg.startsWith('--auth-key=file:')), '用 file: 形式传 key')
+      assert.ok(upCall.argv.includes('--hostname=dsh-smoke-host'), '带 --hostname')
+      assert.equal(upCall.argv.some((arg) => arg.includes(VALID_KEY)), false, 'argv 不含原始 key')
+
+      const keyFile = authKeyFileFromCalls(home)
+      assert.ok(keyFile, 'calls.log 里能拿到临时 key 文件路径')
+      assert.equal(existsSync(keyFile), false, '调用结束后临时 key 文件已删除')
+      assert.equal(readFileSync(join(home, 'calls.log'), 'utf8').includes(VALID_KEY), false, 'calls.log 不含 key')
+
+      const statusNow = JSON.parse(readFileSync(join(home, 'status.json'), 'utf8'))
+      assert.equal(statusNow.BackendState, 'Running', '登录后 BackendState=Running')
+      assert.equal(statusNow.Self.HostName, 'dsh-smoke-host', '登录后 HostName 生效')
+      assert.equal(statusNow.FakeUp?.authKeyProvided, true, '假 CLI 确认读到了 key 文件')
+      assert.equal(statusNow.FakeUp?.authKeyMode, 0o600, 'key 临时文件权限 0600')
+
+      const fresh = await service.status({ fresh: true })
+      assert.equal(fresh.backend, 'Running', 'service.status 看到 Running')
+      assert.equal(fresh.self.hostName, 'dsh-smoke-host', 'service.status 看到新 hostname')
+    })
+  })
+
+  await t.test('up 失败 → 错误消息脱敏为 tskey-***', async () => {
+    await withFakeHome({ status: 'status-needs-login.json' }, async ({ home }) => {
+      const { service } = makeService({ home })
+      process.env.FAKE_TAILSCALE_FAIL = 'up-failed@up'
+      await assert.rejects(
+        () => service.loginWithAuthKey({ key: VALID_KEY }),
+        (error) => {
+          assert.equal(error.code, 'tailscale/cli-failed', `up 失败归为 CLI 失败：${error.code}`)
+          assert.equal(error.message.includes(VALID_KEY), false, '错误消息不含原始 key')
+          assert.match(error.message, /tskey-\*\*\*/, `错误消息里 key 被替换：${error.message}`)
+          // 假 CLI 的 stderr 还带了一个 decoy key；正则兜底应把「所有」tskey-… 都脱敏
+          const masked = error.message.match(/tskey-\*\*\*/g) || []
+          assert.ok(masked.length >= 2, `精确 key + decoy 都应脱敏：${error.message}`)
+          assert.doesNotMatch(error.message, /tskey-(?!\*\*\*)/, `不能残留任何真实 tskey-…：${error.message}`)
+          return true
+        },
+        'up 失败必须拒绝并脱敏',
+      )
+      const statusNow = JSON.parse(readFileSync(join(home, 'status.json'), 'utf8'))
+      assert.equal(statusNow.BackendState, 'NeedsLogin', '失败后状态未变')
+      const keyFile = authKeyFileFromCalls(home)
+      assert.ok(keyFile, '失败时也留下了 argv 路径')
+      assert.equal(existsSync(keyFile), false, '失败时临时 key 文件也删除')
+      assert.equal(readFileSync(join(home, 'calls.log'), 'utf8').includes(VALID_KEY), false, 'calls.log 不含 key')
+    })
+  })
+
+  await t.test('authKeyEnv 环境变量可作为 key 来源', async () => {
+    await withFakeHome({ status: 'status-needs-login.json' }, async ({ home }) => {
+      const { service } = makeService({ home })
+      const previous = process.env.TAILSCALE_AUTH_KEY
+      delete process.env.TAILSCALE_AUTH_KEY
+      try {
+        await assert.rejects(
+          () => service.loginWithAuthKey({}),
+          (error) => {
+            assert.equal(error.code, 'tailscale/bad-auth-key', '没有 key → bad-auth-key')
+            return true
+          },
+          '没有 key 时必须拒绝',
+        )
+        process.env.TAILSCALE_AUTH_KEY = VALID_KEY
+        assert.deepEqual(await service.loginWithAuthKey({}), { ok: true }, '从环境变量取 key 登录成功')
+      } finally {
+        restoreEnv('TAILSCALE_AUTH_KEY', previous)
+      }
+    })
+  })
+})
+
+test('setup.js · auth key 不落盘 / 不进日志', async () => {
+  await withFakeHome({ status: 'status-needs-login.json' }, async ({ home }) => {
+    const { service, state, stateFile } = makeService({ home })
+    await state.write({
+      url: `https://${HOST}/`,
+      host: HOST,
+      path: '/',
+      target: 'http://127.0.0.1:3080',
+      owned: true,
+      createdAt: 1,
+      dshPid: process.pid,
+    })
+    await service.loginWithAuthKey({ key: VALID_KEY, hostname: 'dsh-secret-check' })
+
+    for (const file of [stateFile, join(home, 'calls.log'), join(home, 'status.json')]) {
+      assert.equal(existsSync(file), true, `${file} 应存在`)
+      assert.equal(readFileSync(file, 'utf8').includes(VALID_KEY), false, `${file} 不能包含 auth key`)
+    }
+    const keyFile = authKeyFileFromCalls(home)
+    assert.ok(keyFile, '拿到临时文件路径')
+    assert.equal(existsSync(keyFile), false, '临时 key 文件已不存在')
+  })
+})
+
+test('setup.js · setHostname 校验与生效', async () => {
+  await withFakeHome({}, async ({ home }) => {
+    const { service } = makeService({ home })
+    for (const bad of ['', '-leading', 'trailing-', 'has space', 'a'.repeat(64), '中文主机名']) {
+      await assert.rejects(
+        () => service.setHostname(bad),
+        (error) => {
+          assert.equal(error.code, 'tailscale/bad-hostname', `非法 hostname 应拒绝：${JSON.stringify(bad)}`)
+          return true
+        },
+        `非法 hostname 被拒绝：${JSON.stringify(bad)}`,
+      )
+    }
+    assert.equal(existsSync(join(home, 'calls.log')), false, '非法 hostname 不触发 CLI')
+
+    const result = await service.setHostname('dsh-renamed-host')
+    assert.deepEqual(result, { ok: true, hostname: 'dsh-renamed-host' }, '返回 {ok,hostname}')
+    const setCall = readCalls(home).find((call) => call.argv[0] === 'set')
+    assert.deepEqual(setCall?.argv, ['set', '--hostname=dsh-renamed-host'], '调用 set --hostname')
+    const statusNow = JSON.parse(readFileSync(join(home, 'status.json'), 'utf8'))
+    assert.equal(statusNow.Self.HostName, 'dsh-renamed-host', 'status.json HostName 更新')
+  })
+})
+
+test('setup.js · authUrl 状态判定', async (t) => {
+  await t.test('Running 且无 AuthURL → already-running', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home })
+      await assert.rejects(
+        () => service.authUrl(),
+        (error) => {
+          assert.equal(error.code, 'tailscale/already-running', 'Running → already-running')
+          return true
+        },
+        '已运行时应拒绝生成登录链接',
+      )
+    })
+  })
+
+  await t.test('NeedsLogin 带 AuthURL → 原样返回', async () => {
+    await withFakeHome({ status: 'status-needs-login.json' }, async ({ home }) => {
+      const authUrl = 'https://login.tailscale.com/a/smoke-auth-url'
+      patchStatus(home, (data) => {
+        data.AuthURL = authUrl
+        data.BackendState = 'NeedsLogin'
+      })
+      const { service } = makeService({ home })
+      assert.equal(await service.authUrl(), authUrl, '返回 status.AuthURL')
+    })
+  })
+
+  await t.test('NeedsLogin 无 AuthURL → no-auth-url', async () => {
+    await withFakeHome({ status: 'status-needs-login.json' }, async ({ home }) => {
+      const { service } = makeService({ home })
+      await assert.rejects(
+        () => service.authUrl(),
+        (error) => {
+          assert.equal(error.code, 'tailscale/no-auth-url', '没有待完成登录 → no-auth-url')
+          return true
+        },
+        '没有 AuthURL 时应拒绝',
+      )
+    })
+  })
+})
+
 // ================================================================ 8. 探测（本地回环，不触网）
 test('probe.js · 只探测 tailnet 地址 / 本机 TCP 连通', async () => {
   assert.equal(assertProbeTarget('100.107.25.26'), true, 'tailnet IPv4 允许')
@@ -1311,6 +1716,7 @@ test('index.js · createHandler RPC 围栏', async (t) => {
   const makeRpcService = () => ({
     snapshot: async () => ({ status: { backend: 'Running' }, devices: [] }),
     summary: async () => ({ running: true, backend: 'Running', devicesOnline: 2, devicesTotal: 3 }),
+    setupInfo: () => ({ installed: true, method: 'brew', allowAutoInstall: true, state: { phase: 'idle' } }),
     health: async (options) => ({ ok: true, deep: options?.deep === true, checks: [] }),
     loginUrl: async () => `https://${HOST}/?token=smoke-secret-token`,
     publish: async (options) => ({ enabled: true, path: options?.path ?? '/' }),
@@ -1371,6 +1777,14 @@ test('index.js · createHandler RPC 围栏', async (t) => {
     assert.equal(response.json?.value?.devicesOnline, 2, 'summary.devicesOnline 透传')
   })
 
+  await t.test('POST setup：200 且透传 service.setupInfo()', async () => {
+    const response = await callRpc(rpc(() => ({ peer: {} })), { url: '/tailscale/setup', method: 'POST', body: '{}' })
+    assert.equal(response.status, 200, '200 状态码')
+    assert.equal(response.json?.value?.installed, true, 'setup.installed 透传')
+    assert.equal(response.json?.value?.method, 'brew', 'setup.method 透传')
+    assert.equal(response.json?.value?.state?.phase, 'idle', 'setup.state 透传')
+  })
+
   await t.test('query 与尾斜杠归一化', async () => {
     const response = await callRpc(rpc(() => ({ peer: {} })), { url: '/tailscale/snapshot/?x=1', method: 'POST', body: '{}' })
     assert.equal(response.status, 200, '200 状态码')
@@ -1423,6 +1837,30 @@ test('index.js · dispatch 端点映射与参数形状', async (t) => {
       calls.push(['devices', options])
       return [{ hostName: 'pixel-7a' }]
     },
+    setupInfo: () => {
+      calls.push(['setupInfo'])
+      return { installed: true }
+    },
+    install: async () => {
+      calls.push(['install'])
+      return { installed: true }
+    },
+    start: async () => {
+      calls.push(['start'])
+      return { ok: true }
+    },
+    authUrl: async () => {
+      calls.push(['authUrl'])
+      return 'https://login.tailscale.com/a/smoke'
+    },
+    loginWithAuthKey: async (options) => {
+      calls.push(['login', options])
+      return { ok: true }
+    },
+    setHostname: async (name) => {
+      calls.push(['hostname', name])
+      return { ok: true, hostname: name }
+    },
   }
 
   assert.deepEqual(await dispatch('snapshot', {}, service), { from: 'snapshot' }, 'snapshot 透传返回值')
@@ -1442,6 +1880,23 @@ test('index.js · dispatch 端点映射与参数形状', async (t) => {
   assert.deepEqual(calls.at(-1), ['devices', { fresh: true, online: true }], 'devices 参数透传')
   await dispatch('devices', { online: false }, service)
   assert.deepEqual(calls.at(-1), ['devices', { fresh: false, online: undefined }], 'online/fresh 只认严格 true')
+
+  // setup 向导端点（P2a+P2b）
+  assert.deepEqual(await dispatch('setup', {}, service), { installed: true }, 'setup → service.setupInfo()')
+  assert.deepEqual(calls.at(-1), ['setupInfo'], 'setup 端点调用 setupInfo')
+  assert.deepEqual(await dispatch('install', {}, service), { installed: true }, 'install 透传')
+  assert.deepEqual(calls.at(-1), ['install'], 'install 端点调用 install')
+  assert.deepEqual(await dispatch('start', {}, service), { ok: true }, 'start 透传')
+  assert.deepEqual(calls.at(-1), ['start'], 'start 端点调用 start')
+  assert.deepEqual(await dispatch('auth-url', {}, service), { url: 'https://login.tailscale.com/a/smoke' }, 'auth-url 包成 {url}')
+  await dispatch('login', { key: 'tskey-abc', hostname: 'host-1' }, service)
+  assert.deepEqual(calls.at(-1), ['login', { key: 'tskey-abc', hostname: 'host-1' }], 'login 透传 key/hostname')
+  await dispatch('login', { key: 42, hostname: 43 }, service)
+  assert.deepEqual(calls.at(-1), ['login', { key: undefined, hostname: undefined }], '非字符串参数 → undefined')
+  await dispatch('hostname', { hostname: 'renamed-host' }, service)
+  assert.deepEqual(calls.at(-1), ['hostname', 'renamed-host'], 'hostname 透传')
+  await dispatch('hostname', { hostname: 42 }, service)
+  assert.deepEqual(calls.at(-1), ['hostname', ''], '非字符串 hostname → 空串')
 
   await assert.rejects(
     () => dispatch('nope', {}, service),
