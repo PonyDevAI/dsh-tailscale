@@ -1,21 +1,38 @@
 # CHANGELOG
 
-## 0.2.0 (unreleased)
+## 0.2.0 — 2026-10-24
 
-- 统一系统 Tailscale 向导：检测 → 自动安装（brew 优先，官方 pkg + 系统授权回退）→ 启动 → 登录（AuthURL 本地二维码 / auth key）→ 配置 hostname。
-- 新增 `lib/setup.js`（安装/启动/登录/主机名管理）；auth key 走 0600 临时文件 + `--auth-key=file:`，不入日志/不落盘。
-- 新增 RPC：`setup` / `install` / `start` / `auth-url` / `login` / `hostname`；`summary()`/`snapshot()` 带 setup 信息。
-- Client：安装卡（含进度日志轮询）、Tailscale 登录卡（本地二维码 + auth key）、节点 hostname 卡（二次确认），二维码用 vendored MIT qrcode-generator 本地生成。
-- 配置：`allowAutoInstall`（默认 true）、`installMethod`、`authKeyEnv`。
+### 新增
+- 统一系统 Tailscale 向导：检测 → 自动安装（brew 优先，官方 pkg + 系统授权回退）→ 启动 → 登录（AuthURL 本地二维码 / auth key）→ 配置 hostname，全部在「设置 → 远程访问」内完成。
+- 设置页新增安装卡（含安装进度日志轮询）、Tailscale 登录卡（本地二维码 + auth key）、节点 hostname 卡（二次确认）。
+- 会话头部 Tailscale 图标：绿/红/灰状态点、悬停摘要、30 秒轮询（页面隐藏暂停）、点击直达「设置 → 远程访问」。
+- 检查更新：设置页标题右侧显示当前版本，一键对比 npm 最新版并给出升级命令（10 分钟缓存）。
+- 新增 RPC：`setup` / `install` / `start` / `auth-url` / `login` / `hostname` / `update-check` / `status`；`summary()` 与 `snapshot()` 带 setup 信息。
+- 发布物料：CI、Release（tag 触发 + npm Trusted Publishing）、AGENTS/CONTRIBUTING/RELEASE、i18n 与 release-notes 脚本、UI 截图。
 
-## 0.1.1 (unreleased)
+### 修复
+- HMR 重载竞态：旧实例的异步 dispose 可能撤掉新实例的入口；状态文件记录 `instanceId`，旧实例不再撤销他人路由与 trustedHosts。
+- 入口漂移自愈：自动发布后 1.2s 校验重建 + 60s 低频自愈，覆盖外部 `serve reset`、Tailscale 重启等场景。
+- App Store 版 Tailscale CLI 在无 `TERM` 环境下的"假成功"（stdout 报 GUI 失败、exit 0）：子进程补 `TERM` 并校验版本输出。
+- 发布失败不再留孤路由：创建/认领后若状态写入或信任桥失败会回滚；撤回失败会如实上抛，不静默留下指向已退出进程的路由。
 
-- 会话头部新增 Tailscale 图标：绿/红/灰状态点、30s 轮询（页面隐藏暂停）、悬停显示在线状态/域名/入口/设备数；点击打开「设置 → 远程访问」。
-- 新增低开销 RPC `POST /tailscale/status`（只读缓存 status + 状态文件，不查 serve）。
-- 修复 HMR 重载竞态：状态文件记录 `instanceId`，旧实例不再撤掉新实例的入口与 trustedHosts。
-- 自动发布后 1.2s 校验重建 + 60s 低频自愈（仅 autoPublish 时），修复外部 `serve reset`、Tailscale 重启等导致的入口漂移。
-- 测试 62 用例（新增 summary / instanceId / superseded / status 端点 / HMR 校验）。
+### 安全
+- auth key 只走 0600 临时文件 + `tailscale up --auth-key=file:`，不出现在进程参数、日志、状态文件；错误信息做 `tskey-***` 正则脱敏。
+- 二维码由 vendored MIT `qrcode-generator` 在浏览器本地生成，AuthURL / 登录链接不出本机。
+- `/tailscale/*` 全部经过 `connection.admit()`；不启用 Funnel；不改系统节点身份除非用户显式二次确认。
 
-## 0.1.0 (unreleased)
+## 0.1.1 — 2026-10-24
 
-- 初始版本：入站远程入口（serve 四态认领、trustedHosts、登录链接）+ 出站 tailnet 设备感知服务（`ctx.tailscale`）+ 设置页「远程访问」。
+### 新增
+- 会话头部 Tailscale 图标（在线/离线状态点、打开设置）。
+- `POST /tailscale/status` 轻量状态端点。
+
+### 修复
+- HMR 重载竞态与入口漂移（见 0.2.0 修复项）。
+
+## 0.1.0 — 2026-10-24
+
+### 新增
+- 远程入口：`tailscale serve` 四态认领（absent/exact/stale/conflict）、运行期 trustedHosts、登录链接、退出只撤自己那条路由。
+- `ctx.tailscale` 服务：`status/devices/device/publication/health/snapshot/publish/unpublish/loginUrl/probe/subscribe`。
+- 设备感知与初始设置页（状态/入口/设备/诊断）。

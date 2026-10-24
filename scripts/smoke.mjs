@@ -5,7 +5,8 @@
 // - 覆盖：纯函数（devices/serve/trust/state/cli 归类）→ CLI 包装 → 服务层状态机
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -20,13 +21,21 @@ import { assertAuthority, ensureTrusted, isTrusted } from '../lib/trust.js'
 import { createStateStore } from '../lib/state.js'
 import { createTailscaleService } from '../lib/service.js'
 import { detectInstall, SetupManager } from '../lib/setup.js'
+import { checkUpdate } from '../lib/update.js'
 import { assertProbeTarget, probeTcp } from '../lib/probe.js'
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
+const PLUGIN_ROOT = dirname(SCRIPT_DIR)
 const FAKE_CLI = join(SCRIPT_DIR, 'fake-tailscale.mjs')
 const FIXTURES = join(SCRIPT_DIR, 'fixtures')
 const HOST = 'fake-studio.tail1234.ts.net' // status-running.json 的 Self.DNSName 去掉尾点
 const AUTHORITY = `${HOST}:443`
+const PKG_VERSION = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf8')).version
+const NEXT_VERSION = (() => {
+  const [major, minor, patch] = PKG_VERSION.split('-')[0].split('.').map(Number)
+  return `${major}.${minor}.${patch + 1}`
+})()
+const OLDER_VERSION = '0.1.9' // 仓库当前版本 >= 0.2.0，固定用它验证「旧版本不算可更新」
 
 // ---------------------------------------------------------------- 临时目录
 const tempDirs = new Set()
@@ -107,6 +116,45 @@ function authKeyFileFromCalls(home) {
     if (token) return token.slice('--auth-key=file:'.length)
   }
   return ''
+}
+
+/** 最小 fetch Response 桩：checkUpdate 只用 status / ok / json()。 */
+function responseOf(status, body) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    json: async () => body,
+  }
+}
+
+/** 临时替换 globalThis.fetch 做离线桩，结束后恢复原值。 */
+async function withFetchStub(stub, run) {
+  const original = globalThis.fetch
+  globalThis.fetch = stub
+  try {
+    return await run()
+  } finally {
+    globalThis.fetch = original
+  }
+}
+
+/** 同步跑一个发布脚本，返回 {status, stdout, stderr}（失败不抛）。 */
+function runScript(file, args = []) {
+  try {
+    const stdout = execFileSync(process.execPath, [file, ...args], {
+      cwd: PLUGIN_ROOT,
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return { status: 0, stdout, stderr: '' }
+  } catch (error) {
+    return {
+      status: typeof error.status === 'number' ? error.status : 1,
+      stdout: String(error.stdout || ''),
+      stderr: String(error.stderr || ''),
+    }
+  }
 }
 
 /** 假 ctx：service 只通过 ctx.get(name) 取 connection / webServer。 */
@@ -1682,6 +1730,128 @@ test('setup.js · authUrl 状态判定', async (t) => {
   })
 })
 
+// ================================================================ 7f. update.js（检查更新，fetch 桩离线）
+test('update.js · checkUpdate 版本判定 / 错误 / 缓存', async (t) => {
+  await t.test('200 + 新版本 → updateAvailable:true、command 带具体版本、字段白名单', async () => {
+    let requested = ''
+    await withFetchStub(
+      async (url) => {
+        requested = String(url)
+        return responseOf(200, { version: NEXT_VERSION })
+      },
+      async () => {
+        const result = await checkUpdate({ force: true })
+        assert.match(requested, /^https:\/\/registry\.npmjs\.org\/@ponydev%2Fdsh-tailscale\/latest$/, 'registry 请求路径')
+        assert.equal(result.name, '@ponydev/dsh-tailscale', 'name')
+        assert.equal(result.registry, 'https://registry.npmjs.org/', 'registry')
+        assert.equal(result.current, PKG_VERSION, 'current 取 package.json 版本')
+        assert.equal(result.latest, NEXT_VERSION, 'latest 透传')
+        assert.equal(result.updateAvailable, true, '新版本 → 可更新')
+        assert.equal(result.error, null, '成功时 error 为 null')
+        assert.equal(result.command, `dsh plugin --profile web add @ponydev/dsh-tailscale@${NEXT_VERSION}`, 'command 带具体版本')
+        assert.equal(typeof result.checkedAt, 'number', 'checkedAt 数字')
+        // 安全：字段白名单，不含任何凭据类内容
+        assert.deepEqual(
+          Object.keys(result).sort(),
+          ['checkedAt', 'command', 'current', 'error', 'latest', 'name', 'registry', 'updateAvailable'],
+          'update-check 响应字段白名单',
+        )
+        const text = JSON.stringify(result).toLowerCase()
+        for (const word of ['token', 'secret', 'password', 'authorization', 'cookie']) {
+          assert.equal(text.includes(word), false, `响应不含 ${word}`)
+        }
+      },
+    )
+  })
+
+  await t.test('200 + 同版本 → updateAvailable:false', async () => {
+    await withFetchStub(async () => responseOf(200, { version: PKG_VERSION }), async () => {
+      const result = await checkUpdate({ force: true })
+      assert.equal(result.latest, PKG_VERSION)
+      assert.equal(result.updateAvailable, false, '同版本不算可更新')
+      assert.equal(result.error, null)
+      assert.match(result.command, new RegExp(`@${PKG_VERSION.replace(/\./g, '\\.')}$`), '成功时 command 带该版本')
+    })
+  })
+
+  await t.test('200 + 旧版本 → updateAvailable:false', async () => {
+    await withFetchStub(async () => responseOf(200, { version: OLDER_VERSION }), async () => {
+      const result = await checkUpdate({ force: true })
+      assert.equal(result.latest, OLDER_VERSION)
+      assert.equal(result.updateAvailable, false, '旧版本不算可更新')
+    })
+  })
+
+  await t.test('404 → error 提示尚未发布，command 回落 @latest', async () => {
+    await withFetchStub(async () => responseOf(404, {}), async () => {
+      const result = await checkUpdate({ force: true })
+      assert.equal(result.latest, null, '404 没有 latest')
+      assert.equal(result.updateAvailable, false)
+      assert.match(String(result.error), /还没有发布/, `首次发布前的正常状态：${result.error}`)
+      assert.match(result.command, /@latest$/, '失败时 command 回落 @latest')
+    })
+  })
+
+  await t.test('500 → error=HTTP 500', async () => {
+    await withFetchStub(async () => responseOf(500, { error: 'boom' }), async () => {
+      const result = await checkUpdate({ force: true })
+      assert.equal(result.error, 'HTTP 500', '非 2xx 保留状态码')
+      assert.equal(result.latest, null)
+    })
+  })
+
+  await t.test('200 + 空对象 → error 非空、不崩', async () => {
+    await withFetchStub(async () => responseOf(200, {}), async () => {
+      const result = await checkUpdate({ force: true })
+      assert.ok(result.error, '缺 version → error 非空')
+      assert.match(String(result.error), /version/, 'error 说明缺少 version')
+      assert.equal(result.latest, null)
+      assert.equal(result.updateAvailable, false)
+    })
+  })
+
+  await t.test('fetch 抛 AbortError → error 非空、不抛异常', async () => {
+    await withFetchStub(async () => {
+      const error = new Error('The operation was aborted')
+      error.name = 'AbortError'
+      throw error
+    }, async () => {
+      const result = await checkUpdate({ force: true })
+      assert.ok(result.error, '超时/中断时 error 非空')
+      assert.match(String(result.error), /aborted/i)
+      assert.equal(result.latest, null)
+      assert.equal(result.updateAvailable, false)
+    })
+  })
+
+  await t.test('10 分钟缓存：普通调用只 fetch 一次，force 才重新请求', async () => {
+    let fetches = 0
+    let version = NEXT_VERSION
+    const stub = async () => {
+      fetches += 1
+      return responseOf(200, { version })
+    }
+    await withFetchStub(stub, async () => {
+      const primed = await checkUpdate({ force: true })
+      assert.equal(fetches, 1, 'force 触发一次 fetch')
+      assert.equal(primed.latest, NEXT_VERSION)
+
+      version = '9.9.9' // 桩返回值变化，但缓存仍应命中
+      const cached = await checkUpdate()
+      assert.equal(fetches, 1, '缓存期内不再 fetch')
+      assert.equal(cached.latest, NEXT_VERSION, '返回缓存结果而不是新值')
+
+      const forced = await checkUpdate({ force: true })
+      assert.equal(fetches, 2, 'force 跳过缓存')
+      assert.equal(forced.latest, '9.9.9', 'force 拿到新值')
+
+      const cachedAgain = await checkUpdate()
+      assert.equal(fetches, 2, 'force 之后重新进入缓存')
+      assert.equal(cachedAgain.latest, '9.9.9')
+    })
+  })
+})
+
 // ================================================================ 8. 探测（本地回环，不触网）
 test('probe.js · 只探测 tailnet 地址 / 本机 TCP 连通', async () => {
   assert.equal(assertProbeTarget('100.107.25.26'), true, 'tailnet IPv4 允许')
@@ -1783,6 +1953,22 @@ test('index.js · createHandler RPC 围栏', async (t) => {
     assert.equal(response.json?.value?.installed, true, 'setup.installed 透传')
     assert.equal(response.json?.value?.method, 'brew', 'setup.method 透传')
     assert.equal(response.json?.value?.state?.phase, 'idle', 'setup.state 透传')
+  })
+
+  await t.test('POST update-check：200 且透传 {ok:true,value}（fetch 桩）', async () => {
+    await withFetchStub(async () => responseOf(200, { version: NEXT_VERSION }), async () => {
+      const response = await callRpc(rpc(() => ({ peer: {} })), {
+        url: '/tailscale/update-check',
+        method: 'POST',
+        body: '{"force":true}',
+      })
+      assert.equal(response.status, 200, '200 状态码')
+      assert.equal(response.json?.ok, true, 'ok=true')
+      assert.equal(response.json?.value?.latest, NEXT_VERSION, 'latest 透传')
+      assert.equal(response.json?.value?.updateAvailable, true, 'updateAvailable 透传')
+      assert.equal(typeof response.json?.value?.command, 'string', 'command 透传')
+      assert.equal(response.json?.value?.error, null, '没有 error')
+    })
   })
 
   await t.test('query 与尾斜杠归一化', async () => {
@@ -1897,6 +2083,26 @@ test('index.js · dispatch 端点映射与参数形状', async (t) => {
   assert.deepEqual(calls.at(-1), ['hostname', 'renamed-host'], 'hostname 透传')
   await dispatch('hostname', { hostname: 42 }, service)
   assert.deepEqual(calls.at(-1), ['hostname', ''], '非字符串 hostname → 空串')
+
+  // update-check 直接走 lib/update.js（不经过 service）：用 fetch 桩 + 缓存观察 force 透传
+  let updateFetches = 0
+  await withFetchStub(
+    async () => {
+      updateFetches += 1
+      return responseOf(200, { version: '9.9.9' })
+    },
+    async () => {
+      const forced = await dispatch('update-check', { force: true }, service)
+      assert.equal(updateFetches, 1, 'force:true 会请求 registry')
+      assert.equal(forced.latest, '9.9.9', 'force:true 返回新结果')
+      const cachedResult = await dispatch('update-check', { force: false }, service)
+      assert.equal(updateFetches, 1, 'force:false 命中 10 分钟缓存')
+      assert.equal(cachedResult.latest, '9.9.9', '缓存结果一致')
+      const defaulted = await dispatch('update-check', {}, service)
+      assert.equal(updateFetches, 1, '缺省 force 也走缓存')
+      assert.equal(defaulted.latest, '9.9.9')
+    },
+  )
 
   await assert.rejects(
     () => dispatch('nope', {}, service),
@@ -2040,5 +2246,70 @@ test('index.js · 自动发布 1.2s 后校验并重建被移除的路由（HMR �
     } finally {
       cleanup()
     }
+  })
+})
+
+// ================================================================ 13. 发布脚本（离线正例/负例）
+test('release scripts · release-notes 正例/负例', async (t) => {
+  await t.test('正例：抽取当前版本条目 → exit 0 且输出与 CHANGELOG 一致', () => {
+    const out = join(tempDir('dsh-ts-notes-ok-'), 'notes.md')
+    const result = runScript(join(PLUGIN_ROOT, 'scripts', 'release-notes.mjs'), [out])
+    assert.equal(result.status, 0, `release-notes 应 exit 0（stderr: ${result.stderr}）`)
+    assert.match(result.stdout, new RegExp(`版本 ${PKG_VERSION.replace(/\./g, '\\.')}`), 'stdout 报出当前版本')
+    assert.equal(existsSync(out), true, '输出文件已写入')
+
+    const changelog = readFileSync(join(PLUGIN_ROOT, 'CHANGELOG.md'), 'utf8').split('\n')
+    const start = changelog.findIndex((line) => line.trim().startsWith(`## ${PKG_VERSION}`))
+    assert.ok(start >= 0, `CHANGELOG 有当前版本 ## ${PKG_VERSION} 条目`)
+    let end = changelog.findIndex((line, index) => index > start && /^##\s+/.test(line.trim()))
+    if (end < 0) end = changelog.length
+    const expected = changelog.slice(start + 1, end).join('\n').trim()
+    assert.ok(expected.length > 0, 'CHANGELOG 当前版本条目非空')
+    assert.equal(readFileSync(out, 'utf8').trim(), expected, 'release 正文 = CHANGELOG 当前版本条目')
+  })
+
+  await t.test('负例：临时副本 version=9.9.9（CHANGELOG 无该条目）→ exit 1', () => {
+    const tempRoot = tempDir('dsh-ts-notes-bad-')
+    mkdirSync(join(tempRoot, 'scripts'), { recursive: true })
+    copyFileSync(join(PLUGIN_ROOT, 'scripts', 'release-notes.mjs'), join(tempRoot, 'scripts', 'release-notes.mjs'))
+    copyFileSync(join(PLUGIN_ROOT, 'CHANGELOG.md'), join(tempRoot, 'CHANGELOG.md'))
+    const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf8'))
+    pkg.version = '9.9.9'
+    writeFileSync(join(tempRoot, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`)
+
+    const result = runScript(join(tempRoot, 'scripts', 'release-notes.mjs'), [join(tempRoot, 'out.md')])
+    assert.equal(result.status, 1, '缺当前版本条目 → 发布必须失败')
+    assert.match(result.stderr, /9\.9\.9/, `stderr 指明缺失的版本：${result.stderr}`)
+    assert.equal(existsSync(join(tempRoot, 'out.md')), false, '失败时不写输出文件')
+  })
+})
+
+test('release scripts · check-i18n 正例/负例', async (t) => {
+  await t.test('正例：当前 lib/client.js zh/en 一致 → exit 0', () => {
+    const result = runScript(join(PLUGIN_ROOT, 'scripts', 'check-i18n.mjs'))
+    assert.equal(result.status, 0, `check-i18n 应 exit 0（stderr: ${result.stderr}）`)
+    assert.match(result.stdout, /i18n OK/, 'stdout 报告 i18n OK')
+  })
+
+  await t.test('负例：临时副本删掉一个 en 键 → exit 1', () => {
+    const tempRoot = tempDir('dsh-ts-i18n-bad-')
+    mkdirSync(join(tempRoot, 'scripts'), { recursive: true })
+    mkdirSync(join(tempRoot, 'lib'), { recursive: true })
+    copyFileSync(join(PLUGIN_ROOT, 'scripts', 'check-i18n.mjs'), join(tempRoot, 'scripts', 'check-i18n.mjs'))
+    const clientPath = join(tempRoot, 'lib', 'client.js')
+    copyFileSync(join(PLUGIN_ROOT, 'lib', 'client.js'), clientPath)
+
+    const source = readFileSync(clientPath, 'utf8')
+    const enStart = source.indexOf('const en = {')
+    assert.ok(enStart >= 0, '找到 en 字典')
+    const block = source.slice(enStart)
+    const entry = block.match(/^[ \t]*([A-Za-z][A-Za-z0-9]*):\s*'(?:[^'\\]|\\.)*',?[ \t]*$/m)
+    assert.ok(entry, '找到一条 en 词条用于制造缺失')
+    writeFileSync(clientPath, source.slice(0, enStart) + block.replace(entry[0], ''))
+
+    const result = runScript(join(tempRoot, 'scripts', 'check-i18n.mjs'))
+    assert.equal(result.status, 1, 'en 缺键 → 必须失败')
+    assert.match(result.stderr, /仅 zh 有（en 缺失）/, `stderr 指出 en 缺失：${result.stderr}`)
+    assert.match(result.stderr, new RegExp(entry[1]), `stderr 点名缺失键 ${entry[1]}`)
   })
 })

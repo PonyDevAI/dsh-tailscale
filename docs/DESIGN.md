@@ -113,7 +113,7 @@ lib/client.js         # 浏览器：window.__ModuleLoader__.load({ id, factory }
   - `Self`：`ID / NodeID / HostName / DNSName（带尾点）/ OS / Online / TailscaleIPs / Tags / CurAddr / Relay / LastSeen / PeerRelay / Capabilities / PeerAPIURL / Created…`。
   - `Peer`：**map**，key 是节点稳定 ID；每项含 `HostName / DNSName / OS / Online / TailscaleIPs / Tags / CurAddr / Relay / LastSeen / Expired / KeyExpiry / ExitNode / PeerRelay …`。本机当前 29 个 peer、16 个在线，含 Android（Pixel 7a、unicom-sfa-pony）与 iOS 节点 —— 正好是 dsh-phone 发现功能的真实验证集。
   - `Health: []` 为空表示 tailscaled 自检正常；`CertDomains` 里有 `<self>.<tailnet>.ts.net` 说明 HTTPS 证书可用；`MagicDNSEnabled: true`。
-- **`serve status --json`**：`{ "TCP": { "443": { "HTTPS": true } }, "Web": { "macstudio.tail8fbb79.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3080" } } } } }` —— 没有 `AllowFunnel` 键就表示未开 Funnel（本机当前就是私网 Serve）。
+- **`serve status --json`**：`{ "TCP": { "443": { "HTTPS": true } }, "Web": { "dsh-node.example-tailnet.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3080" } } } } }` —— 没有 `AllowFunnel` 键就表示未开 Funnel（本机当前就是私网 Serve）。
 - **`funnel status --json`** 在未开 Funnel 时输出与 serve 相同的配置块，因此**不能用它判断 Funnel**；要看 `serve status --json` 里目标 authority 的 `AllowFunnel` 字段是否存在/为真。
 - **`serve get-config --all`** 在本机返回 `{ "version": "0.0.1" }`（没有把现有 handler 列出来），说明这条路由是旧式 CLI 写入的；**不要**用 get/set-config 做 v1 的增删基础，P0 再确认兼容写法。
 - **`serve --help`**（1.104）确认支持：`--bg`、`--https <port>`、`--http`、`--set-path <path>`、`--tcp`、`serve status/reset/drain/clear/...`。
@@ -122,9 +122,9 @@ lib/client.js         # 浏览器：window.__ModuleLoader__.load({ id, factory }
 - **ServeConfig 结构**（`ipn/serve.go`）：`{ TCP, Web: { "host:port": { Handlers: { "/path": { Proxy } } } }, Services, AllowFunnel, Foreground }`。判断"路由是否存在"要：① `Web[<dnsName>:<port>].Handlers[<path>].Proxy` 归一化（**去尾斜杠**）后与目标比较；② 端口占用看 `TCP["443"].HTTPS`；③ Funnel 看 `AllowFunnel`。
 - **沙箱注意**（实测）：App Store 版 Tailscale 是 app-sandbox 应用，在 DSH agent 工具的 seatbelt 沙箱里执行它的 CLI 会 **SIGTRAP / 退出码 133**（`_libsecinit_appsandbox`），不是"未运行"。插件在 **dsh host 进程**里 `execFile` 不受此限（launchd 脚本就是这么跑的）；将来若给 agent 加 tailscale 工具，必须在非沙箱路径执行。
 - **App Store 版 CLI 需要 `TERM`**（P1 现网踩坑）：host 进程（launchd 启动的 `dsh web`）环境里没有 `TERM` 时，`tailscale version` / `status --json` 会往 **stdout** 打印 `The Tailscale GUI failed to start ... (Tailscale.CLIError error 3.)` 并以 exit 0 退出——不是报错，是"假成功"。修复：插件 `execFile` 时给子进程补 `TERM=xterm-256color`（实验证明 `TERM=dumb` 也行）；`version()` 同时校验首行必须是版本号，避免把这种输出当健康。
-- **tailnet 上的 adb 已经跑通**（本机只读实测）：`adb devices -l` 里已有 `100.107.25.26:5555`（Pixel 7a）、`100.90.248.53:5555`、`unicom-openclaw-pony:5555`、`unicom-openclaw-test:5555`；`nc -z` 100.x:5555 可通。⇒ dsh-phone 的"发现 + 一键连接"不是纸面方案，现成链路可直接联调。
+- **tailnet 上的 adb 已经跑通**（本机只读实测）：`adb devices -l` 里已有 `100.64.0.11:5555`（Pixel 7a）、`100.64.0.12:5555`、`unicom-openclaw-pony:5555`、`unicom-openclaw-test:5555`；`nc -z` 100.x:5555 可通。⇒ dsh-phone 的"发现 + 一键连接"不是纸面方案，现成链路可直接联调。
 - **hdc 3.2.0f** 可用：`hdc tconn <ip>:<port>` 建 TCP target、`tconn <key> -remove` 断开、`tmode port <port>` 对应 adb tcpip、`-t <connectkey>` 选设备；`hdc list targets` 当前只有 `127.0.0.1:5555`。
-- 本机现有路由 `https://macstudio.tail8fbb79.ts.net/ → http://127.0.0.1:3080` 正是插件上线后要**认领**的对象（target 精确匹配即视为上次自己留下的）。
+- 本机现有路由 `https://dsh-node.example-tailnet.ts.net/ → http://127.0.0.1:3080` 正是插件上线后要**认领**的对象（target 精确匹配即视为上次自己留下的）。
 
 ---
 
@@ -136,7 +136,7 @@ lib/client.js         # 浏览器：window.__ModuleLoader__.load({ id, factory }
         └───────────────▲───────────────────────────────────────────────┘
                         │  TLS 由 tailscaled 终止，回源明文到 127.0.0.1
                  ┌──────┴───────────────┐
-                 │  tailscale serve     │  https://macstudio.tail8fbb79.ts.net
+                 │  tailscale serve     │  https://dsh-node.example-tailnet.ts.net
                  │  (tailscaled 管理)    │      → http://127.0.0.1:3080
                  └──────┬───────────────┘
                         │  Host 头原样保留 → 需要 trustedHosts
@@ -169,7 +169,7 @@ lib/client.js         # 浏览器：window.__ModuleLoader__.load({ id, factory }
 type TailnetDevice = {
   id: string            // Tailscale 节点 ID（status --json 的 Peer key 或 Self.ID）
   hostName: string      // macstudio
-  dnsName: string       // macstudio.tail8fbb79.ts.net（去掉末尾点）
+  dnsName: string       // dsh-node.example-tailnet.ts.net（去掉末尾点）
   ips: string[]         // 100.x.x.x / fd7a:...
   os: string            // macOS / linux / android / iOS
   online: boolean
@@ -253,7 +253,7 @@ interface TailscaleService {
 - **多实例**（同机第二个 dsh，如 3080 + 3081）：用 `--set-path=/dsh2` 共享同一个 443；v1 先做单实例，path 支持放 P4。
 - **HMR 重载竞态（v0.1.1 修复）**：热重载时新旧插件实例短暂并存，旧实例的异步 dispose 可能在新实例发布之后才执行 `serve off`，把新入口撤掉。修复：状态文件写 `instanceId`，`unpublish` 只在归属仍是自己时才撤路由/摘 trustedHosts；自动发布后再延迟 1.2s 校验一次，非 exact 就重建（只重试一次）。
 - **低频自愈（v0.1.1）**：autoPublish 开启时每 60s 校验一次入口（只读状态文件 + serve status），非 `exact` 就重建。覆盖 HMR 竞态、外部 `serve reset`、Tailscale 重启、CLI 瞬时失败等漂移；关闭 autoPublish 时自愈不运行。
-- **P0/P1 现网验证（2026-10-24，真实 tailscaled 1.104.2 + 真实 dsh web 进程）**：插件装进 web profile 后自动发布成功 —— `publication` = `enabled/routeState:'exact'/owned/adopted`；`POST /tailscale/snapshot` 经 `https://macstudio.tail8fbb79.ts.net` 返回 200（30 台设备 / 17 在线）；无 cookie 401、伪造 Origin 403；`https://…/?token=…` 返回 303 + `dsh-auth-…` cookie（手机登录流程成立）；RPC `unpublish` 后 `tailscale serve status` = "No serve config"、状态文件删除、ts.net 不可达；`publish` 后路由恢复、根路径回到 401。**尚未验证的是"重启 dsh 后自动恢复"与"SIGTERM dispose 后路由消失"**（会打断当前会话，留给你手动重启验证）。
+- **P0/P1 现网验证（2026-10-24，真实 tailscaled 1.104.2 + 真实 dsh web 进程）**：插件装进 web profile 后自动发布成功 —— `publication` = `enabled/routeState:'exact'/owned/adopted`；`POST /tailscale/snapshot` 经 `https://dsh-node.example-tailnet.ts.net` 返回 200（30 台设备 / 17 在线）；无 cookie 401、伪造 Origin 403；`https://…/?token=…` 返回 303 + `dsh-auth-…` cookie（手机登录流程成立）；RPC `unpublish` 后 `tailscale serve status` = "No serve config"、状态文件删除、ts.net 不可达；`publish` 后路由恢复、根路径回到 401。**尚未验证的是"重启 dsh 后自动恢复"与"SIGTERM dispose 后路由消失"**（会打断当前会话，留给你手动重启验证）。
 
 
 ### 6.3 登录链接与"登录一次就够"
@@ -308,7 +308,7 @@ interface TailscaleService {
 
 ### 7.3 dsh-phone 集成（P3）
 
-依赖方向：dsh-phone → dsh-tailscale（可选）。**本机已验证 tailnet adb 链路存在**（`100.107.25.26:5555`、`unicom-openclaw-pony:5555` 等），所以 P3 是"接数据源 + 加 UI"，不是"验证可行性"。
+依赖方向：dsh-phone → dsh-tailscale（可选）。**本机已验证 tailnet adb 链路存在**（`100.64.0.11:5555`、`unicom-openclaw-pony:5555` 等），所以 P3 是"接数据源 + 加 UI"，不是"验证可行性"。
 
 Host 侧（dsh-phone）：
 
@@ -322,7 +322,7 @@ const peers = tailscale ? await tailscale.devices({ online: true }) : []
 
 ```json
 { "ok": true, "value": { "available": true, "candidates": [
-  { "dnsName": "unicom-openclaw-pony.tail8fbb79.ts.net", "hostName": "unicom-openclaw-pony",
+  { "dnsName": "unicom-openclaw-pony.example-tailnet.ts.net", "hostName": "unicom-openclaw-pony",
     "online": true, "protocols": [{ "id": "adb", "port": 5555, "reachable": true, "ms": 23 }] }
 ] } }
 ```
@@ -331,7 +331,7 @@ Client 侧：连接面板里加「Tailnet 设备」分组；点一下 → 复用
 
 注意（实测踩点）：
 
-- 同一台手机现在会同时出现在 USB（`34201JEHN07681`）、tailnet IP（`100.107.25.26:5555`）、MagicDNS 名（`unicom-openclaw-pony:5555`）三种 serial 下 —— 展示层要按 **model + 设备标识** 归并，不能按 serial 字符串分组。
+- 同一台手机现在会同时出现在 USB（`34201JEHN07681`）、tailnet IP（`100.64.0.11:5555`）、MagicDNS 名（`unicom-openclaw-pony:5555`）三种 serial 下 —— 展示层要按 **model + 设备标识** 归并，不能按 serial 字符串分组。
 - `adb tcpip 5555` 后 adbd 监听 `[::]:5555`（所有接口），tailnet 只解决"连得到"，不解决"谁能连"；授权弹窗仍是唯一防线。文档要写明这是用户自己的设备/网络边界。
 - hdc 用 `hdc tconn <ip>:<port>` 建 target、`tconn <key> -remove` 断开；多 target 时必须 `-t <connectkey>` 指定设备，选错是常见事故 —— 所以 hdc transport 放 P4，P3 只做 adb。
 
@@ -342,7 +342,7 @@ tailnet:
   enabled: true
   adbPort: 5555
   hdcPort: 8710
-  allow: ["unicom-openclaw-*", "*.tail8fbb79.ts.net"]
+  allow: ["unicom-openclaw-*", "*.example-tailnet.ts.net"]
   autoConnect: false        # 默认不自动连；开了也只连 allow 命中的
 ```
 
@@ -360,14 +360,14 @@ tailnet:
 ```
 远程访问 · Tailscale
 ┌───────────────────────────────────────────────────────────────┐
-│ ● Tailscale 运行中 · macstudio.tail8fbb79.ts.net              │
+│ ● Tailscale 运行中 · dsh-node.example-tailnet.ts.net              │
 │   入口已开启（443 → 127.0.0.1:3080）              [关闭]       │
 │                                                               │
-│ 手机入口  https://macstudio.tail8fbb79.ts.net/   [复制]        │
+│ 手机入口  https://dsh-node.example-tailnet.ts.net/   [复制]        │
 │ 首次登录  [生成登录链接]（链接含本次启动令牌，只发给可信设备）   │
 │                                                               │
 │ 设备（5 在线 / 7 总计）                                        │
-│   ● macstudio       100.100.x.x   macOS   本机                │
+│   ● dsh-node        100.64.x.x   macOS   本机                │
 │   ● unicom-openclaw-pony  …      linux    adb:5555 ✓          │
 │   ○ …                                                         │
 │                                                               │
@@ -412,14 +412,18 @@ plugins/dsh-tailscale/
 │   ├── trust.js        TrustBridge：trustedHosts 校验/推送/回滚
 │   ├── devices.js      status JSON → TailnetDevice（纯函数，可单测）
 │   ├── probe.js        TCP 可达性探测（纯 node:net）
+│   ├── setup.js        统一系统 Tailscale：检测/安装/启动/登录/hostname
+│   ├── update.js       npm registry 检查更新（10 分钟缓存）
 │   ├── service.js      ctx.tailscale 实现（组合上面几层）
 │   └── client.js       浏览器半区：设置页组件、i18n、轮询
 ├── scripts/
 │   ├── fake-tailscale.mjs   假 CLI（canned status/serve JSON），冒烟与单测用
 │   ├── smoke.mjs            冒烟：服务方法 + RPC 围栏 + 状态机
 │   └── render-test.mjs      离线渲染测试（可选）
-├── docs/                      本文 + 截图
+├── docs/                      本文 + DESIGN.md + screenshots/
 ├── README.md / CHANGELOG.md / LICENSE
+├── AGENTS.md / CONTRIBUTING.md / RELEASE.md
+├── .github/workflows/         ci.yml + release.yml
 └── .github/workflows/ci.yml (P4)
 ```
 
@@ -483,6 +487,11 @@ plugins/dsh-tailscale/
 | `health` | 深检（可带 `deep: true`） |
 | `login-url` | 返回含 token 的登录链接（仅认证请求；不缓存） |
 | `publish` / `unpublish` | 开关入口 |
+| `status` | 顶部图标用的轻量状态摘要（不查 serve） |
+| `setup` / `install` / `start` | 统一系统 Tailscale 的检测/安装/启动 |
+| `auth-url` / `login` | 扫码登录 URL（AuthURL）/ auth key 登录 |
+| `hostname` | 修改本机节点 hostname（二次确认） |
+| `update-check` | npm registry 检查更新（`force` 跳过缓存） |
 | `devices` | 设备列表（供未来其他插件的浏览器侧复用） |
 
 客户端调用约定：**必须用相对路径**（`fetch('tailscale/snapshot')`，不带前导 `/`），以兼容 `/dsh2/` 这类挂载前缀；model-usage / dsh-phone 都是这么写的。不要用 SSE/WS（v1 轮询足够，两个现成插件也全是轮询）。
@@ -508,8 +517,8 @@ plugins/dsh-tailscale/
 现状（2026-10-22 起）：
 
 - `~/Library/LaunchAgents/local.dsh-tailnet-serve.plist` → `~/.local/bin/dsh-tailnet-serve.sh`，登录时补 `serve --bg --https=443 http://127.0.0.1:3080`。
-- dsh 启动参数带 `--trusted-host macstudio.tail8fbb79.ts.net`。
-- 实测 `https://macstudio.tail8fbb79.ts.net/` 返回 401（路由与认证层正常）。
+- dsh 启动参数带 `--trusted-host dsh-node.example-tailnet.ts.net`。
+- 实测 `https://dsh-node.example-tailnet.ts.net/` 返回 401（路由与认证层正常）。
 
 迁移步骤：
 
@@ -579,7 +588,7 @@ plugins/dsh-tailscale/
 3. ~~`connection.trustedHosts.push` 运行期是否生效~~ ✅ 已现网验证：push 后经 ts.net 的 `/tailscale/*` 与 `/api` 围栏通过（未带 cookie 401 / 伪造 Origin 403 / 带 cookie 200）。
 4. ~~`authenticatedUrl()` 登录流程~~ ✅ 已验证到「303 + Set-Cookie」；「跨 DSH 重启 cookie 仍有效」由签名密钥持久化保证，待重启实测。
 5. ~~`tailscale serve` 在 launchd 启动的 host 进程里是否可用~~ ✅ 可用（补 `TERM` 后）；注意 App Store CLI 的无 TERM 假成功坑。
-6. ~~现有 Android peer 是否开了 adb tcpip~~ ✅ 已确认：`adb devices -l` 能看到 `100.107.25.26:5555` / `unicom-openclaw-pony:5555` 等 tailnet 通道。剩余：hdc 直连 tailnet 设备未验证。
+6. ~~现有 Android peer 是否开了 adb tcpip~~ ✅ 已确认：`adb devices -l` 能看到 `100.64.0.11:5555` / `unicom-openclaw-pony:5555` 等 tailnet 通道。剩余：hdc 直连 tailnet 设备未验证。
 
 ---
 
@@ -698,7 +707,7 @@ plugins/dsh-tailscale/
 | `autoPublish` / `httpsPort` / `publishPath` / `unpublishOnExit` | 同 v0.1 | 入口行为 |
 | `hostname` | 空（保持节点现名） | 设置后执行 `tailscale set --hostname <name>`；**改的是整机节点名**，需二次确认并提示影响其他服务 |
 | `authKeyEnv` | `TAILSCALE_AUTH_KEY` | 读取环境变量的键名 |
-| `allowAutoInstall` | `false` | 必须显式开启才允许插件代跑安装命令 |
+| `allowAutoInstall` | `true`（2026-10-24 决策） | 允许插件代跑安装命令；仍会二次确认/系统授权，可改为 false 关闭 |
 | `installMethod` | `auto` | `auto` / `brew` / `pkg` / `manual`，按平台可用性降级 |
 | `deviceTtlMs` / `probeTimeoutMs` / `allow` | 同 v0.1 | 设备感知 |
 
@@ -727,3 +736,13 @@ plugins/dsh-tailscale/
 | macOS 首次安装需要用户批准 VPN 配置 | 明确提示「打开 Tailscale 并允许 VPN 配置」，未完成时状态机停在"已安装未运行" |
 | auth key 泄漏 | 仅环境变量/内存；不落盘；错误信息脱敏 |
 | hostname 改动影响整机 | 默认不改；修改前二次确认并列出影响（SSH、serve 域名、其他服务） |
+
+---
+
+## 19. 发布与 CI/CD（v0.2.0 对齐 dsh-model-usage）
+
+- `.github/workflows/ci.yml`：push main / PR → Node 24、`lib/*.js` 语法、`scripts/smoke.mjs`、`scripts/check-i18n.mjs`、`npm pack --dry-run`。
+- `.github/workflows/release.yml`：push `v*` tag → 校验 tag==package.json version → 语法+smoke+i18n → npm Trusted Publishing（OIDC，`--access public --provenance`，已发布则跳过）→ CHANGELOG 抽 release notes → GitHub Release。
+- 发布规范见 `RELEASE.md`；每次发版必须更新 `CHANGELOG.md`（`## <semver> — <YYYY-MM-DD>`）。
+- Trusted Publisher 配置：npm 包设置 → PonyDevAI / dsh-tailscale / release.yml；**首次发布**需要维护者先用一次性 token 发布 0.2.0（或 npm 允许时直接配 OIDC），之后 revoke。
+- 截图：`docs/screenshots/{01-settings,02-header,03-devices,04-update}.png`，UI 变更时同步更新。
