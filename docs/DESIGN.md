@@ -251,6 +251,8 @@ interface TailscaleService {
 - **崩溃/强杀**：serve 路由会留在 tailscaled 里。下次启动按 §6.1 第 5 步认领：`exact` → 视为上次自己留下的，继续 owned，退出时一并撤。这条和 dsh-tailscale-remote 的处理一致。
 - **P0 实测（2026-10-24，Tailscale 1.104.2）**：`serve --bg --https=443 --set-path=/dsh-probe http://127.0.0.1:3080` → exit 0；`serve --https=443 --set-path=/dsh-probe off` → exit 0，只撤该 path，根路由保持 401、探针 path 变 404。⇒「建单条 / 撤单条 / 不碰根路由」已在现网验证。
 - **多实例**（同机第二个 dsh，如 3080 + 3081）：用 `--set-path=/dsh2` 共享同一个 443；v1 先做单实例，path 支持放 P4。
+- **HMR 重载竞态（v0.1.1 修复）**：热重载时新旧插件实例短暂并存，旧实例的异步 dispose 可能在新实例发布之后才执行 `serve off`，把新入口撤掉。修复：状态文件写 `instanceId`，`unpublish` 只在归属仍是自己时才撤路由/摘 trustedHosts；自动发布后再延迟 1.2s 校验一次，非 exact 就重建（只重试一次）。
+- **低频自愈（v0.1.1）**：autoPublish 开启时每 60s 校验一次入口（只读状态文件 + serve status），非 `exact` 就重建。覆盖 HMR 竞态、外部 `serve reset`、Tailscale 重启、CLI 瞬时失败等漂移；关闭 autoPublish 时自愈不运行。
 - **P0/P1 现网验证（2026-10-24，真实 tailscaled 1.104.2 + 真实 dsh web 进程）**：插件装进 web profile 后自动发布成功 —— `publication` = `enabled/routeState:'exact'/owned/adopted`；`POST /tailscale/snapshot` 经 `https://macstudio.tail8fbb79.ts.net` 返回 200（30 台设备 / 17 在线）；无 cookie 401、伪造 Origin 403；`https://…/?token=…` 返回 303 + `dsh-auth-…` cookie（手机登录流程成立）；RPC `unpublish` 后 `tailscale serve status` = "No serve config"、状态文件删除、ts.net 不可达；`publish` 后路由恢复、根路径回到 401。**尚未验证的是"重启 dsh 后自动恢复"与"SIGTERM dispose 后路由消失"**（会打断当前会话，留给你手动重启验证）。
 
 
@@ -373,6 +375,14 @@ tailnet:
 │   ✓ CLI   ✓ 网络   ✓ 路由   ✓ 信任   ✓ Funnel 未开启           │
 └───────────────────────────────────────────────────────────────┘
 ```
+
+### 8.1 会话头部图标（v0.1.1）
+
+- 位置：`conversation.session.header.utilities`（会话头部右上角工具区，和手机图标同排，order 9）。
+- 形态：Tailscale 六点图标 + 右下角状态点：**绿=Running**、**红=未运行/未登录**、**灰=未知/接口不可用**；tooltip 显示 `Tailscale · 在线 · <域名> · 入口已开启 · 17/30 设备在线`。
+- 数据：新增轻量 RPC `POST /tailscale/status`（只读 cached status + 状态文件，不查 serve），客户端每 30s 轮询、页面隐藏时暂停、focus/visibilitychange 立即刷新；不挂高频定时器。
+- 点击：打开 **设置 → 远程访问** 并定位到该分区。实现方式：先找已渲染的导航项直接点；否则派发 `settings.open` 的 web 快捷键（`primary+alt+Comma`）打开设置面板，再等导航项出现后点中——DSH 0.2.1 没有公开的 settings 导航服务，这是最稳的无侵入衔接；若未来失效，点击至少会打开设置页。
+- i18n 与主题 token 同设置页；图标不写 console、不存状态。
 
 状态语言（一套）：`正常 / 未安装 / 未运行 / 未登录 / HTTPS 未启用 / 路由冲突 / 信任未生效`。每种状态只给一个主动作 + 一条可复制命令。
 

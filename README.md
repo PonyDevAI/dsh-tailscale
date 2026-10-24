@@ -31,6 +31,17 @@ dsh plugin --profile web add link:/Users/pony/deepseek/plugins/dsh-tailscale
 
 退出时：`tailscale serve --https=<httpsPort> [--set-path=<path>] off`，只撤自己那条；**绝不** `serve reset`、**绝不** `tailscale down`。
 
+## 会话头部图标
+
+会话右上角工具区有一个 Tailscale 图标（和手机图标同排）：
+
+- 右下角状态点：**绿** = 在线（Running），**红** = 未运行/未登录，**灰** = 状态未知（Host 接口不可用）。
+- 悬停显示 `Tailscale · 在线 · <节点域名> · 入口已开启 · 17/30 设备在线`。
+- 点击直接打开 **设置 → 远程访问** 分区。
+- 状态每 30 秒刷新一次，页面隐藏时暂停；不存任何 token。
+
+Host 侧每 60 秒做一次轻量自愈：入口路由不在（被 HMR 重载竞态、外部 `serve reset` 或 Tailscale 重启弄丢）就自动重建；`autoPublish: false` 时不启用。
+
 ## 手机登录
 
 设置页「远程访问」→「生成登录链接」会调用 DSH 的 `connection.authenticatedUrl()`，得到带本次进程 launch token 的链接。

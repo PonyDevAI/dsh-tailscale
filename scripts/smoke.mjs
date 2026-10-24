@@ -1173,6 +1173,110 @@ test('service · off 权限失败时 unpublish 上抛且保留路由/状态/信�
   })
 })
 
+// ================================================================ 7d. summary / instanceId / superseded
+test('service · summary() 轻量状态（不查 serve）', async (t) => {
+  await t.test('Running + 已发布：字段齐全，只读一次 status', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home })
+      await service.publish()
+      const callsBefore = readCalls(home).length
+      const summary = await service.summary()
+      assert.equal(summary.running, true, 'running=true')
+      assert.equal(summary.backend, 'Running', 'backend')
+      assert.equal(summary.dnsName, HOST, 'dnsName')
+      assert.equal(summary.hostName, 'fake-studio', 'hostName 取 Self.HostName')
+      assert.equal(summary.devicesOnline, 2, '在线设备数')
+      assert.equal(summary.devicesTotal, 3, '设备总数')
+      assert.equal(summary.publication.enabled, true, 'publication.enabled')
+      assert.equal(summary.publication.url, `https://${HOST}/`, 'publication.url')
+      assert.equal(summary.publication.path, '/', 'publication.path')
+      assert.equal(typeof summary.at, 'number', 'at 时间戳')
+      assert.equal(summary.error, undefined, '正常时没有 error')
+      const summaryCalls = readCalls(home).slice(callsBefore).map((call) => call.argv.join(' '))
+      assert.deepEqual(summaryCalls, ['status --json'], 'summary 只读一次 cached status，不查 serve')
+    })
+  })
+
+  await t.test('status 失败：running=false + error，publication 仍来自状态文件', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home })
+      await service.publish()
+      process.env.FAKE_TAILSCALE_FAIL = 'not-running@status --json'
+      const summary = await service.summary()
+      assert.equal(summary.running, false, 'running=false')
+      assert.equal(summary.backend, 'Unknown', '读不到状态时 backend 回落 Unknown')
+      assert.equal(summary.dnsName, '', '没有 dnsName')
+      assert.equal(summary.hostName, '', '没有 hostName')
+      assert.equal(summary.devicesOnline, 0, '在线数 0')
+      assert.equal(summary.devicesTotal, 0, '总数 0')
+      assert.equal(summary.error?.code, 'tailscale/not-running', '错误码透传')
+      assert.equal(summary.publication.enabled, true, 'publication 仍来自状态文件')
+      assert.equal(summary.publication.url, `https://${HOST}/`, 'url 来自状态文件')
+      assert.equal(summary.publication.path, '/', 'path 来自状态文件')
+    })
+  })
+
+  await t.test('无状态文件：publication.enabled=false 且 url 为空', async () => {
+    await withFakeHome({}, async ({ home }) => {
+      const { service } = makeService({ home })
+      const summary = await service.summary()
+      assert.equal(summary.running, true, 'Tailscale 在运行')
+      assert.equal(summary.publication.enabled, false, '未发布')
+      assert.equal(summary.publication.url, '', '没有 url')
+      assert.equal(summary.publication.path, '/', '默认发布路径')
+    })
+  })
+})
+
+test('service · publish 写入并复用实例 instanceId', async () => {
+  await withFakeHome({}, async ({ home }) => {
+    const { service, stateFile } = makeService({ home })
+    await service.publish()
+    const first = JSON.parse(readFileSync(stateFile, 'utf8'))
+    assert.equal(typeof first.instanceId, 'string', '状态文件带 instanceId')
+    assert.ok(first.instanceId.length >= 8, 'instanceId 非空')
+
+    await service.publish()
+    const second = JSON.parse(readFileSync(stateFile, 'utf8'))
+    assert.equal(second.instanceId, first.instanceId, '同一实例重复 publish 复用 instanceId')
+
+    // 模拟 HMR 新实例接管：新实例发布时写自己的 instanceId
+    const other = makeService({ home })
+    await other.service.publish()
+    const third = JSON.parse(readFileSync(stateFile, 'utf8'))
+    assert.notEqual(third.instanceId, first.instanceId, '新实例写自己的 instanceId')
+    assert.equal(third.host, HOST, '新实例状态文件 host 正确')
+  })
+})
+
+test('service · unpublish() 识别实例已被接管（superseded）', async () => {
+  await withFakeHome({}, async ({ home }) => {
+    const { service, connection, stateFile } = makeService({ home })
+    await service.publish()
+    assert.deepEqual(connection.trustedHosts, [HOST], '发布后 trustedHosts 已加入')
+
+    // 模拟新实例接管：状态文件的 instanceId 换成别人的
+    const stored = JSON.parse(readFileSync(stateFile, 'utf8'))
+    stored.instanceId = 'superseded-instance-b'
+    const supersededContent = `${JSON.stringify(stored, null, 2)}\n`
+    writeFileSync(stateFile, supersededContent)
+
+    const callsBefore = readCalls(home).length
+    const result = await service.unpublish()
+    assert.equal(result.enabled, false, 'enabled=false')
+    assert.equal(result.superseded, true, '返回 superseded 标记')
+    assert.equal(result.path, '/', '带 path')
+    assert.equal(result.target, 'http://127.0.0.1:3080', '带 target')
+
+    const newCalls = readCalls(home).slice(callsBefore).map((call) => call.argv.join(' '))
+    assert.equal(newCalls.includes('serve --https=443 off'), false, 'superseded 不能撤别人的路由')
+    assert.equal(readServe(home).Web[AUTHORITY].Handlers['/'].Proxy, 'http://127.0.0.1:3080', 'serve.json handler 仍在')
+    assert.deepEqual(connection.trustedHosts, [HOST], 'trustedHosts 仍保留')
+    assert.equal(existsSync(stateFile), true, '状态文件仍在')
+    assert.equal(readFileSync(stateFile, 'utf8'), supersededContent, '状态文件内容不变')
+  })
+})
+
 // ================================================================ 8. 探测（本地回环，不触网）
 test('probe.js · 只探测 tailnet 地址 / 本机 TCP 连通', async () => {
   assert.equal(assertProbeTarget('100.107.25.26'), true, 'tailnet IPv4 允许')
@@ -1206,6 +1310,7 @@ test('probe.js · 只探测 tailnet 地址 / 本机 TCP 连通', async () => {
 test('index.js · createHandler RPC 围栏', async (t) => {
   const makeRpcService = () => ({
     snapshot: async () => ({ status: { backend: 'Running' }, devices: [] }),
+    summary: async () => ({ running: true, backend: 'Running', devicesOnline: 2, devicesTotal: 3 }),
     health: async (options) => ({ ok: true, deep: options?.deep === true, checks: [] }),
     loginUrl: async () => `https://${HOST}/?token=smoke-secret-token`,
     publish: async (options) => ({ enabled: true, path: options?.path ?? '/' }),
@@ -1258,6 +1363,14 @@ test('index.js · createHandler RPC 围栏', async (t) => {
     assert.deepEqual(response.json?.value, { status: { backend: 'Running' }, devices: [] }, 'value 原样透传')
   })
 
+  await t.test('POST status：200 且透传 service.summary()', async () => {
+    const response = await callRpc(rpc(() => ({ peer: {} })), { url: '/tailscale/status', method: 'POST', body: '{}' })
+    assert.equal(response.status, 200, '200 状态码')
+    assert.equal(response.json?.ok, true, 'ok=true')
+    assert.equal(response.json?.value?.running, true, 'summary.running 透传')
+    assert.equal(response.json?.value?.devicesOnline, 2, 'summary.devicesOnline 透传')
+  })
+
   await t.test('query 与尾斜杠归一化', async () => {
     const response = await callRpc(rpc(() => ({ peer: {} })), { url: '/tailscale/snapshot/?x=1', method: 'POST', body: '{}' })
     assert.equal(response.status, 200, '200 状态码')
@@ -1289,6 +1402,10 @@ test('index.js · dispatch 端点映射与参数形状', async (t) => {
   const calls = []
   const service = {
     snapshot: async () => ({ from: 'snapshot' }),
+    summary: async () => {
+      calls.push(['summary'])
+      return { from: 'status' }
+    },
     health: async (options) => {
       calls.push(['health', options])
       return { from: 'health' }
@@ -1309,6 +1426,8 @@ test('index.js · dispatch 端点映射与参数形状', async (t) => {
   }
 
   assert.deepEqual(await dispatch('snapshot', {}, service), { from: 'snapshot' }, 'snapshot 透传返回值')
+  assert.deepEqual(await dispatch('status', {}, service), { from: 'status' }, 'status → service.summary()')
+  assert.deepEqual(calls.at(-1), ['summary'], 'status 端点调用 summary')
   assert.deepEqual(await dispatch('health', { deep: true }, service), { from: 'health' }, 'health 返回形状')
   assert.deepEqual(calls.at(-1), ['health', { deep: true }], 'health deep=true')
   await dispatch('health', { deep: 'true' }, service)
@@ -1409,5 +1528,62 @@ test('index.js · apply 注册服务与 RPC 路由、自动发布、dispose 撤�
     const commands = readCalls(home).map((call) => call.argv.join(' '))
     assert.equal(commands.some((command) => command.includes('reset')), false, '绝不能调用 serve reset')
     assert.equal(commands.some((command) => command.startsWith('down')), false, '绝不能调用 tailscale down')
+  })
+})
+
+// ================================================================ 12. HMR 竞态：1.2s 后校验重建
+test('index.js · 自动发布 1.2s 后校验并重建被移除的路由（HMR 竞态）', async () => {
+  await withFakeHome({}, async ({ home }) => {
+    const effects = []
+    const registered = []
+    const scope = {
+      connection: { trustedHosts: [], admit: () => ({ peer: {} }) },
+      webServer: {
+        port: 3080,
+        register(definition) {
+          registered.push(definition)
+          return () => {}
+        },
+      },
+      effect(factory, label) {
+        effects.push({ label, return: factory() })
+      },
+    }
+    const ctx = {
+      provide() {},
+      inject(_services, callback) {
+        callback(scope)
+      },
+      get(name) {
+        if (name === 'connection') return scope.connection
+        if (name === 'webServer') return scope.webServer
+        return undefined
+      },
+    }
+    // unpublishOnExit:false，避免 cleanup 的异步撤回在测试目录清理后打日志
+    apply(ctx, { cliPath: FAKE_CLI, dshHome: join(home, 'apply-home'), autoPublish: true, httpsPort: 443, publishPath: '/', unpublishOnExit: false })
+    const cleanup = effects.find((effect) => effect.label === 'dsh-tailscale: auto publish').return
+    try {
+      await waitFor(
+        () => readServe(home).Web?.[AUTHORITY]?.Handlers?.['/']?.Proxy === 'http://127.0.0.1:3080',
+        '首次自动发布应在超时前完成',
+        4000,
+      )
+      const createsBefore = readCalls(home).filter((call) => call.argv.includes('--bg')).length
+
+      // 模拟 HMR 旧实例的异步 dispose 在新实例发布之后才把路由撤掉
+      writeFileSync(join(home, 'serve.json'), '{}\n')
+      assert.deepEqual(readServe(home), {}, '路由已被移除')
+
+      await waitFor(
+        () => readServe(home).Web?.[AUTHORITY]?.Handlers?.['/']?.Proxy === 'http://127.0.0.1:3080',
+        '1.2s 后的校验应重建路由（等待超时）',
+        6000,
+      )
+      const createsAfter = readCalls(home).filter((call) => call.argv.includes('--bg')).length
+      assert.equal(createsAfter, createsBefore + 1, '只重建一次')
+    } finally {
+      cleanup()
+    }
   })
 })
