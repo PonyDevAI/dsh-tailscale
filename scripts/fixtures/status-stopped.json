@@ -1,0 +1,21 @@
+{
+  "Version": "1.104.2-fake",
+  "BackendState": "Stopped",
+  "TUN": false,
+  "Self": {
+    "ID": "self-node-1",
+    "HostName": "fake-studio",
+    "DNSName": "fake-studio.tail1234.ts.net.",
+    "OS": "macOS",
+    "Online": false,
+    "TailscaleIPs": ["100.101.102.103"],
+    "Tags": [],
+    "CurAddr": "",
+    "Relay": "",
+    "LastSeen": "2026-10-23T12:00:00Z"
+  },
+  "Peer": {},
+  "MagicDNSSuffix": "tail1234.ts.net",
+  "CertDomains": [],
+  "Health": []
+}

@@ -1,0 +1,9 @@
+- insert:
+    - id: tailscale
+      name: "@ponydev/dsh-tailscale"
+      config:
+        autoPublish: true
+        httpsPort: 443
+        publishPath: /
+        unpublishOnExit: true
+        trustHost: true

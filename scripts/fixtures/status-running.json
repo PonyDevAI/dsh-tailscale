@@ -1,0 +1,49 @@
+{
+  "Version": "1.104.2-fake",
+  "BackendState": "Running",
+  "TUN": true,
+  "HaveNodeKey": true,
+  "Self": {
+    "ID": "self-node-1",
+    "NodeID": "self-node-1",
+    "HostName": "fake-studio",
+    "DNSName": "fake-studio.tail1234.ts.net.",
+    "OS": "macOS",
+    "Online": true,
+    "TailscaleIPs": ["100.101.102.103", "fd7a:115c:a1e0:ab12:4843:cd96:6265:6667"],
+    "Tags": ["tag:server"],
+    "CurAddr": "",
+    "Relay": "hkg",
+    "LastSeen": "2026-10-24T09:30:00Z"
+  },
+  "Peer": {
+    "peer-pixel-7a": {
+      "ID": "peer-pixel-7a",
+      "NodeID": "peer-pixel-7a",
+      "HostName": "pixel-7a",
+      "DNSName": "pixel-7a.tail1234.ts.net.",
+      "OS": "android",
+      "Online": true,
+      "TailscaleIPs": ["100.107.25.26", "fd7a:115c:a1e0:ab12:4843:cd96:6265:1a1a"],
+      "Tags": ["tag:phone"],
+      "CurAddr": "192.0.2.10:41641",
+      "Relay": "hkg",
+      "LastSeen": "2026-10-24T09:29:00Z"
+    },
+    "peer-macbook-air": {
+      "ID": "peer-macbook-air",
+      "NodeID": "peer-macbook-air",
+      "HostName": "macbook-air",
+      "DNSName": "macbook-air.tail1234.ts.net.",
+      "OS": "macOS",
+      "Online": false,
+      "TailscaleIPs": ["100.90.248.53"],
+      "CurAddr": "",
+      "Relay": "sin",
+      "LastSeen": "2026-10-20T03:21:00Z"
+    }
+  },
+  "MagicDNSSuffix": "tail1234.ts.net",
+  "CertDomains": ["fake-studio.tail1234.ts.net"],
+  "Health": []
+}

@@ -1,0 +1,21 @@
+{
+  "Version": "1.104.2-fake",
+  "BackendState": "Running",
+  "TUN": true,
+  "Self": {
+    "ID": "self-node-1",
+    "HostName": "fake-studio",
+    "DNSName": "",
+    "OS": "macOS",
+    "Online": true,
+    "TailscaleIPs": ["100.101.102.103"],
+    "Tags": [],
+    "CurAddr": "",
+    "Relay": "hkg",
+    "LastSeen": "2026-10-24T09:30:00Z"
+  },
+  "Peer": {},
+  "MagicDNSSuffix": "",
+  "CertDomains": [],
+  "Health": []
+}

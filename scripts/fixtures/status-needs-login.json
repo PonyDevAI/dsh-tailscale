@@ -1,0 +1,20 @@
+{
+  "Version": "1.104.2-fake",
+  "BackendState": "NeedsLogin",
+  "TUN": false,
+  "HaveNodeKey": false,
+  "Self": {
+    "ID": "",
+    "HostName": "",
+    "DNSName": "",
+    "OS": "macOS",
+    "Online": false,
+    "TailscaleIPs": [],
+    "Tags": [],
+    "CurAddr": "",
+    "Relay": "",
+    "LastSeen": "0001-01-01T00:00:00Z"
+  },
+  "Peer": {},
+  "Health": []
+}

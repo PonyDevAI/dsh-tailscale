@@ -1,0 +1,58 @@
+{
+  "name": "@ponydev/dsh-tailscale",
+  "version": "0.1.0",
+  "description": "DSH Web 插件：把 DSH Web GUI 发布到 tailnet（远程入口），并把 tailnet 设备与可达性暴露为 ctx.tailscale 服务，供其他插件消费",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "tailscale",
+    "tailnet",
+    "remote-access",
+    "serve"
+  ],
+  "license": "MIT",
+  "author": "Pony <205503242+jmaubay7@users.noreply.github.com>",
+  "homepage": "https://github.com/PonyDevAI/dsh-tailscale#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PonyDevAI/dsh-tailscale.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PonyDevAI/dsh-tailscale/issues"
+  },
+  "type": "module",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "engines": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0",
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "check": "node --check lib/index.js && node --check lib/cli.js && node --check lib/serve.js && node --check lib/trust.js && node --check lib/devices.js && node --check lib/probe.js && node --check lib/service.js && node --check lib/client.js",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}
