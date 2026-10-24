@@ -1,6 +1,6 @@
 {
   "name": "@ponydev/dsh-tailscale",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "DSH Web 插件：把 DSH Web GUI 发布到 tailnet（远程入口），并把 tailnet 设备与可达性暴露为 ctx.tailscale 服务，供其他插件消费",
   "keywords": [
     "dsh",

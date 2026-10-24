@@ -376,6 +376,12 @@ tailnet:
 └───────────────────────────────────────────────────────────────┘
 ```
 
+### 8.0 设置导航项（v0.2.4）
+
+- 导航名称改为 **Tailscale**（`title` 键），不再叫「远程访问」。
+- 图标：DSH 的 `settings.section` 只有 `id/order/label` 三个导航字段，图标按 section id 硬编码、没有插件扩展点。实现上给「文案等于 Tailscale」的导航行注入 Tailscale mark（真实 DOM SVG，用 `--dsw-alias-*` 主题色），并隐藏默认齿轮；`MutationObserver` 在 React 重渲染后补回。DSH 升级导致失效时只是退回默认齿轮，功能不受影响。
+- 同一技术用于偏好：不改 DSH 核心、不加运行时依赖。
+
 ### 8.1 会话头部图标（v0.1.1）
 
 - 位置：`conversation.session.header.utilities`（会话头部右上角工具区，和手机图标同排，order 9）。

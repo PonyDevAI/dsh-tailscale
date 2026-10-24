@@ -6,14 +6,14 @@
 **DeepSeek Harness（DSH）Web 插件：把 DSH Web GUI 发布到你的 tailnet，并把 tailnet 设备与可达性作为 `ctx.tailscale` 服务提供给其他插件。**
 
 - **远程入口**：随 DSH 启动自动把 Web 发布到 `https://<节点>.<tailnet>.ts.net/`，手机/平板在任何网络下打开一个网址就能用
-- **统一 Tailscale 向导**：检测 → 安装 → 启动 → 登录（本地二维码 / auth key）→ 配置 hostname，全在「设置 → 远程访问」里完成
+- **统一 Tailscale 向导**：检测 → 安装 → 启动 → 登录（本地二维码 / auth key）→ 配置 hostname，全在「设置 → Tailscale」里完成
 - **设备感知**：`ctx.tailscale.devices()` / `probe()` 把 tailnet 节点和 TCP 可达性交给其他插件（dsh-phone 等），插件本身不认 adb/hdc/ssh
 - **会话头部图标**：绿/红/灰状态点，点击直达设置；30 秒轮询，页面隐藏时暂停
 - **二维码**：远程入口和登录链接都能在浏览器本地生成二维码（手机扫一下即可；二维码不经第三方，token 不出本机）
 - **检查更新**：设置页标题右侧显示当前版本，一键对比 npm 最新版并给出升级命令
 - **私网使用**：只用 `tailscale serve`（tailnet 内），**永不启用 Funnel**
 
-![设置 → 远程访问：状态 / 远程入口 / 首次登录 / 节点主机名](docs/screenshots/01-settings.png)
+![设置 → Tailscale：状态 / 远程入口 / 首次登录 / 节点主机名](docs/screenshots/01-settings.png)
 
 ![会话头部 Tailscale 图标与悬停信息](docs/screenshots/02-header.png)
 
@@ -30,7 +30,7 @@ dsh plugin --profile web add @ponydev/dsh-tailscale
 # 或在 Web「插件」页搜索安装
 ```
 
-装完重启宿主（`launchctl kickstart -k gui/$(id -u)/local.deepseek-harness.web`）并刷新页面，然后打开 **设置 → 远程访问**。
+装完重启宿主（`launchctl kickstart -k gui/$(id -u)/local.deepseek-harness.web`）并刷新页面，然后打开 **设置 → Tailscale**。
 
 ### 本地开发
 
@@ -82,7 +82,7 @@ Host 侧改完重启 `dsh web`（或 touch profile 的 `cordis.patch.yml` 触发
 
 - 右下角状态点：**绿** = 在线（Running），**红** = 未运行/未登录，**灰** = 状态未知（Host 接口不可用）
 - 悬停显示 `Tailscale · 在线 · <节点域名> · 入口已开启 · 17/30 设备在线`
-- 点击直接打开 **设置 → 远程访问**
+- 点击直接打开 **设置 → Tailscale**
 - 状态每 30 秒刷新一次，页面隐藏时暂停；不存任何 token
 
 ### 设备感知（出站，给其他插件用）
@@ -168,7 +168,7 @@ Host 侧 RPC（给浏览器，全部 `POST /tailscale/<endpoint>` 且先过 `con
 
 ## 排障
 
-看 **设置 → 远程访问 → 诊断**（每项带下一步提示和可复制命令）。常见状态：
+看 **设置 → Tailscale → 诊断**（每项带下一步提示和可复制命令）。常见状态：
 
 | 状态 | 含义 | 处理 |
 |---|---|---|
