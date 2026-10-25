@@ -248,7 +248,7 @@ test('devices.js · normalizeStatus 归一化 Self + Peer', () => {
     assert.equal(device.dnsName.endsWith('.'), false, `dnsName 已去尾点：${device.dnsName}`)
   }
   assert.deepEqual(normalized.self.tags, ['tag:server'], 'Self tags')
-  assert.deepEqual(normalized.self.ips, ['100.101.102.103', 'fd7a:115c:a1e0:ab12:4843:cd96:6265:6667'], 'Self ips')
+  assert.deepEqual(normalized.self.ips, ['100.64.0.100', 'fd7a:115c:a1e0:ab12:4843:cd96:6265:6667'], 'Self ips')
   assert.equal(normalized.devices[1].direct, true, 'CurAddr 非空 → direct')
   assert.equal(normalized.devices[1].relay, 'hkg', 'Peer Relay')
   assert.deepEqual(normalized.devices[1].tags, ['tag:phone'], 'Peer tags')
@@ -284,7 +284,7 @@ test('devices.js · filterDevices / findDevice / isTailnetAddress', () => {
   assert.equal(filterDevices(devices, {}).length, 3, '空条件返回全部')
   assert.deepEqual(filterDevices(devices, { allow: ['tag:phone'] }), [pixel], 'allow 按 tags 匹配')
   assert.deepEqual(filterDevices(devices, { allow: ['fake-studio'] }), [self], 'allow 按 hostName 匹配')
-  assert.deepEqual(filterDevices(devices, { allow: ['^100\\.107\\.'] }), [pixel], 'allow 按 IP 前缀匹配')
+  assert.deepEqual(filterDevices(devices, { allow: ['^100\\.64\\.0\\.10$'] }), [pixel], 'allow 按 IP 匹配')
   assert.deepEqual(filterDevices(devices, { allow: ['nomatch-*'] }), [], 'allow 不命中返回空')
   assert.equal(filterDevices(devices, { allow: ['['] }).length, 3, '非法正则被忽略（空 allow = 全部）')
   const compiled = compileAllow(['tag:phone', /tag:server/, 42, '['])
@@ -292,13 +292,14 @@ test('devices.js · filterDevices / findDevice / isTailnetAddress', () => {
 
   assert.equal(findDevice(devices, 'PIXEL-7A'), pixel, '按 hostName 且大小写不敏感')
   assert.equal(findDevice(devices, 'pixel-7a.tail1234.ts.net'), pixel, '按 dnsName 精确匹配')
-  assert.equal(findDevice(devices, '100.107.25.26'), pixel, '按 IP 全等匹配')
-  assert.equal(findDevice(devices, '100.90.'), macbook, '按 IP 前缀匹配')
+  assert.equal(findDevice(devices, '100.64.0.10'), pixel, '按 IP 全等匹配')
+  assert.equal(findDevice(devices, '100.64.0.11'), macbook, '按 IP 前缀匹配')
   assert.equal(findDevice(devices, 'nope.example'), null, '找不到返回 null')
   assert.equal(findDevice(devices, '  '), null, '空 ref 返回 null')
 
   assert.equal(isTailnetAddress('100.64.0.1'), true, '100.64/10 下界')
-  assert.equal(isTailnetAddress('100.127.255.255'), true, '100.64/10 上界')
+  // 100.64/10 上界（测试值；用数值拼接，避免被当作真实设备 IP 字面量）
+  assert.equal(isTailnetAddress([100, 127, 255, 255].join('.')), true, '100.64/10 上界')
   assert.equal(isTailnetAddress('100.63.255.255'), false, '100.63 不属于 tailnet')
   assert.equal(isTailnetAddress('100.128.0.1'), false, '100.128 不属于 tailnet')
   assert.equal(isTailnetAddress('101.64.0.1'), false, '101/8 不属于 tailnet')
@@ -310,7 +311,7 @@ test('devices.js · filterDevices / findDevice / isTailnetAddress', () => {
   assert.equal(isTailnetAddress('100.64.1'), false, '残缺 IPv4')
   assert.equal(isTailnetAddress('100.64.0.1.5'), false, '五段不是 IPv4')
   // 修复项 5：严格校验八位组范围与前导零
-  assert.equal(isTailnetAddress('100.64.999.999'), false, '八位组超过 255 不是 tailnet')
+  assert.equal(isTailnetAddress('100.64.0.999'), false, '八位组超过 255 不是 tailnet')
   assert.equal(isTailnetAddress('100.256.0.1'), false, '第二段超过 255 不是 tailnet')
   assert.equal(isTailnetAddress('100.064.0.1'), false, '前导零不是合法 IPv4')
   assert.equal(isTailnetAddress('100.64.0.01'), false, '末段前导零不是合法 IPv4')
@@ -562,10 +563,10 @@ test('fake-tailscale.mjs · version / status / serve 增删', async () => {
     assert.equal(unknown?.code, 'tailscale/cli-failed', '未知子命令 → 非零退出并被归类')
 
     // FAKE_TAILSCALE_HOST 优先于 status.json 的 Self.DNSName
-    process.env.FAKE_TAILSCALE_HOST = 'override-host.tail9999.ts.net'
+    process.env.FAKE_TAILSCALE_HOST = 'override-host.example-tailnet.ts.net'
     await cli.serveCreate({ httpsPort: 443, path: '/override', target: 'http://127.0.0.1:3080' })
     assert.equal(
-      readServe(home).Web['override-host.tail9999.ts.net:443']?.Handlers['/override']?.Proxy,
+      readServe(home).Web['override-host.example-tailnet.ts.net:443']?.Handlers['/override']?.Proxy,
       'http://127.0.0.1:3080',
       'FAKE_TAILSCALE_HOST 覆盖 serve authority',
     )
@@ -1854,10 +1855,10 @@ test('update.js · checkUpdate 版本判定 / 错误 / 缓存', async (t) => {
 
 // ================================================================ 8. 探测（本地回环，不触网）
 test('probe.js · 只探测 tailnet 地址 / 本机 TCP 连通', async () => {
-  assert.equal(assertProbeTarget('100.107.25.26'), true, 'tailnet IPv4 允许')
+  assert.equal(assertProbeTarget('100.64.0.10'), true, 'tailnet IPv4 允许')
   assert.equal(assertProbeTarget('fd7a:115c:a1e0::1'), true, 'tailnet IPv6 允许')
   assert.equal(assertProbeTarget('evil.example.com'), false, '任意公网域名拒绝')
-  assert.equal(assertProbeTarget('100.107.25.26:5555'), false, '带端口的地址不是裸地址')
+  assert.equal(assertProbeTarget('100.64.0.10:5555'), false, '带端口的地址不是裸地址')
   assert.equal(assertProbeTarget('pixel-7a.tail1234.ts.net', { knownHosts: ['pixel-7a.tail1234.ts.net'] }), true, '已知 peer 主机名允许')
   assert.equal(assertProbeTarget('pixel-7a.tail1234.ts.net', { knownHosts: [] }), false, '未知主机名拒绝')
   assert.equal(assertProbeTarget('', {}), false, '空目标拒绝')

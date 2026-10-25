@@ -31,6 +31,7 @@ launchctl kickstart -k gui/$(id -u)/local.deepseek-harness.web
 for f in lib/*.js; do node --check "$f"; done   # 语法
 node scripts/smoke.mjs                          # 冒烟（离线，80+ 断言）
 node scripts/check-i18n.mjs                     # zh/en 键一致 + tr('key') 不缺键
+node scripts/check-privacy.mjs                  # 隐私门禁：无真实 tailnet/设备标识、本机路径、凭据
 npm pack --dry-run                              # 发布内容检查（本机 npm 缓存异常时用 pnpm -s pack --dry-run）
 ```
 
@@ -44,6 +45,9 @@ CI（`.github/workflows/ci.yml`）在 push `main` / PR 时重复执行以上检�
 - 状态机语言统一：`正常 / 未安装 / 未运行 / 未登录 / HTTPS 未启用 / 路由冲突 / 信任未生效`；每个状态一个主动作
 - UI 不 import primitives，只用 `--dsw-*` token；文案走 zh/en i18n；设置页不写说明性长文
 - 预期内的不可用（未安装/未运行/未登录）不抛异常、不刷日志，走 `health()` 与状态字段
+- **不得提交真实 tailnet 域名 / CGNAT IP / 设备序列号 / 本机绝对路径**；示例值只用 `example-tailnet.ts.net`、`100.64.0.x`、`SERIAL0123456789AB`、`~/...`
+- **截图不得含真实数据**（真实在线数、设备名、IP、域名），优先使用假数据；没有离线 harness 生成的截图不提交
+- 提交前 `npm run check` 含隐私门禁（`scripts/check-privacy.mjs`），命中即失败；不要为通过而放宽规则
 
 ## 测试分层
 

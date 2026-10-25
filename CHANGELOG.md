@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.2.7 — 2026-10-26
+
+### 变更
+- 隐私清理：文档、fixtures 与冒烟测试里的真实 tailnet 域名、CGNAT IP、设备序列号、本机绝对路径与真实设备规模统一替换为示例值
+- 新增 `scripts/check-privacy.mjs` 隐私门禁，接入 `npm run check`、CI 与 release workflow
+- npm `files` 的 `docs` 收紧为 `docs/*.md`，不再把 docs 截图打包进发布物
+- 截图：删除含真实在线数/设备信息的设置页与设备清单图，只保留不含真实数据的 `02-header` / `04-update`，README 与 DESIGN 同步
+
 ## 0.2.6 — 2026-10-24
 
 ### 修复

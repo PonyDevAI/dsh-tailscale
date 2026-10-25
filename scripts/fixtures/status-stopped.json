@@ -8,7 +8,7 @@
     "DNSName": "fake-studio.tail1234.ts.net.",
     "OS": "macOS",
     "Online": false,
-    "TailscaleIPs": ["100.101.102.103"],
+    "TailscaleIPs": ["100.64.0.100"],
     "Tags": [],
     "CurAddr": "",
     "Relay": "",

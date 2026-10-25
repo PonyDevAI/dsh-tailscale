@@ -51,6 +51,12 @@ npm pack --dry-run                              # 发布内容检查（本机 np
 
 CI 会重复执行以上检查（`.github/workflows/ci.yml`，Node 24）；失败不合并。
 
+## 3.1 隐私与截图门禁（不可绕过）
+
+1. **不得提交真实 tailnet 域名 / CGNAT IP / 设备序列号 / 本机绝对路径**；示例值只用 `example-tailnet.ts.net` / `100.64.0.x` / `SERIAL0123456789AB` / `~/...`；
+2. **截图不得含真实数据**（真实在线数、设备名、IP、域名），优先使用假数据；没有离线 harness 生成的截图不提交；
+3. 提交前 `npm run check` 已包含 `scripts/check-privacy.mjs`（CI 与 release 也会跑）；命中即失败，不要为通过而放宽规则。
+
 ## 4. 代码规范
 
 - **ESM only**，无构建步骤，零运行时依赖；不引入打包器/转译器

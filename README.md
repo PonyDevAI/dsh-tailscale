@@ -13,11 +13,7 @@
 - **设置页头部**：显示当前版本 + **GitHub** / **问题反馈** / **检查更新** / 刷新 按钮组；检查更新会对比 npm 最新版并给出升级命令
 - **私网使用**：只用 `tailscale serve`（tailnet 内），**永不启用 Funnel**
 
-![设置 → Tailscale：状态 / 远程入口 / 首次登录 / 节点主机名](docs/screenshots/01-settings.png)
-
 ![会话头部 Tailscale 图标与悬停信息](docs/screenshots/02-header.png)
-
-![设备清单：在线/离线、域名、IP、系统与 tags](docs/screenshots/03-devices.png)
 
 ## 安装
 

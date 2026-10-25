@@ -8,7 +8,7 @@
     "DNSName": "",
     "OS": "macOS",
     "Online": true,
-    "TailscaleIPs": ["100.101.102.103"],
+    "TailscaleIPs": ["100.64.0.100"],
     "Tags": [],
     "CurAddr": "",
     "Relay": "hkg",
