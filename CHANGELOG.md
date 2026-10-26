@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 0.2.8 — 2026-10-26
+
+### 变更
+- 插件 `name` 对齐 PonyDev 插件约定：由包名 `@ponydev/dsh-tailscale` 改为短名 `dsh-tailscale`（与 `dsh-im` / `dsh-phone` / `dsh-system-hud` / `dsh-model-usage` 一致）；`ctx.tailscale.describe().name` 同步。
+- npm 包名、bundle patch 的 `name` 引用与客户端 ModuleLoader id 不变，安装/加载方式不受影响。
+
 ## 0.2.7 — 2026-10-26
 
 ### 变更
